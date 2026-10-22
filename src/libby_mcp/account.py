@@ -46,6 +46,7 @@ class Account:
         self._catalog = catalog
         self._path = path
         self._token: str | None = None
+        self._chip: str | None = None  # identity id; a refresh that changes it means the link was lost
         self._refreshed = False
         self._cards: list[Card] | None = None
 
@@ -60,7 +61,7 @@ class Account:
             raise AccountError(
                 f"Libby didn't accept the setup code ({exc}); codes expire quickly. {CONNECT_HINT}"
             ) from exc
-        await self._refresh_token()
+        await self._refresh_token(keep_identity=False)  # linking may switch identity
         cards = await self.cards(refresh=True)
         if not cards:
             raise NotConnected
@@ -153,33 +154,42 @@ class Account:
             )
         return cards
 
-    async def _refresh_token(self, *, new: bool = False) -> None:
-        """Get a new token (`new`) or refresh the current one, then save it."""
+    async def _refresh_token(self, *, new: bool = False, keep_identity: bool = True) -> None:
+        """Get a new token (`new`) or refresh the current one, then save it.
+
+        Libby answers a refresh it can't honour with a fresh, unlinked identity rather than an
+        error, so a changed identity id means the account link was lost.
+        """
         if new:
-            self._token = None
+            self._token = self._chip = None
         else:
             self._load_token()
+        previous = self._chip
         data = await self._request("POST", "/chip", params={"client": "dewey"})
-        self._token = data["identity"]
+        self._token, self._chip = data["identity"], data.get("chip")
         self._refreshed = True
         self._save_token()
+        if keep_identity and previous and self._chip != previous:
+            self._cards = []
+            raise NotConnected
 
     def _load_token(self) -> str | None:
         if self._token is None and self._path and self._path.is_file():
             try:
-                self._token = json.loads(self._path.read_text()).get("identity")
+                saved = json.loads(self._path.read_text())
+                self._token, self._chip = saved.get("identity"), saved.get("chip")
             except (OSError, ValueError):
-                self._token = None
+                self._token = self._chip = None
         return self._token
 
     def _save_token(self) -> None:
         if not self._path:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps({"identity": self._token}))
+        self._path.write_text(json.dumps({"identity": self._token, "chip": self._chip}))
         self._path.chmod(0o600)
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _request(self, method: str, path: str, *, retry: bool = True, **kwargs: Any) -> dict[str, Any]:
         headers = {"Accept": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -192,6 +202,10 @@ class Account:
         except ValueError:
             body = {}
         if response.status_code in {401, 403}:
+            # The token expired or was revoked: refresh it once and retry.
+            if retry and self._token and path != "/chip":
+                await self._refresh_token()
+                return await self._request(method, path, retry=False, **kwargs)
             raise NotConnected
         if response.is_error:
             raise AccountError(_error_message(response.status_code, body))

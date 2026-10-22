@@ -47,7 +47,7 @@ SYNC = {
 
 
 def chip(request: httpx.Request) -> dict:
-    """POST /chip: a new token, or a refreshed one derived from the bearer token."""
+    """POST /chip: a new token, or a refreshed one derived from the bearer token; same identity."""
     bearer = request.headers.get("Authorization", "").removeprefix("Bearer ")
     return {"identity": f"{bearer or 'new'}+", "chip": "c1"}
 
@@ -68,7 +68,7 @@ def setup(tmp_path):
     def make(routes: dict[str, Any], *, token: str | None = None, read_only: bool = False, libraries=None):
         path = tmp_path / "identity.json"
         if token:
-            path.write_text(json.dumps({"identity": token}))
+            path.write_text(json.dumps({"identity": token, "chip": "c1"}))
         calls: list[httpx.Request] = []
         http = mock_http(routes, calls)
         catalog = Catalog(http, backoff=0)
@@ -95,7 +95,7 @@ async def test_connect_links_account_and_saves_token(setup):
     assert [(c["id"], c["library"]) for c in body["result"]] == [("111", "spl"), ("222", "burnaby")]
     clone = next(c for c in calls if c.url.path == "/chip/clone/code")
     assert clone.content == b"code=12345678" and clone.headers["Authorization"] == "Bearer new+"
-    assert json.loads(path.read_text()) == {"identity": "new++"}
+    assert json.loads(path.read_text()) == {"identity": "new++", "chip": "c1"}
     assert path.stat().st_mode & 0o777 == 0o600
 
 
@@ -125,11 +125,31 @@ async def test_saved_token_is_refreshed_before_use(setup):
     assert refresh.headers["Authorization"] == "Bearer old"
     sync = next(c for c in calls if c.url.path == "/chip/sync")
     assert sync.headers["Authorization"] == "Bearer old+"
-    assert json.loads(path.read_text()) == {"identity": "old+"}
+    assert json.loads(path.read_text()) == {"identity": "old+", "chip": "c1"}
 
 
-async def test_expired_token_asks_to_reconnect(setup):
-    # Libby answers an invalid token with 403, and a refresh of one with a new, unlinked chip.
+async def test_rejected_token_is_refreshed_and_retried(setup):
+    attempts = iter([(403, {"result": "unauthorized"}), (200, SYNC)])
+    server, calls, _ = setup(routes(**{"GET /chip/sync": lambda _: next(attempts)}), token="old")
+    error, body = await call(server, "get_account")
+
+    assert not error and body["loans"]
+    syncs = [c.headers["Authorization"] for c in calls if c.url.path == "/chip/sync"]
+    assert syncs == ["Bearer old+", "Bearer old++"]
+
+
+async def test_lost_link_asks_to_reconnect(setup):
+    # Libby answers a refresh it can't honour with a fresh, unlinked identity instead of an error.
+    lost = {"identity": "anon", "chip": "c2"}
+    server, calls, path = setup(routes(**{"POST /chip": lost}), token="stale")
+    error, body = await call(server, "get_account")
+
+    assert error and "No Libby account is linked" in body
+    assert not any(c.url.path == "/chip/sync" for c in calls)
+    assert json.loads(path.read_text())["chip"] == "c2"
+
+
+async def test_rejected_twice_asks_to_reconnect(setup):
     server, _, _ = setup(routes(**{"GET /chip/sync": (403, {"result": "unauthorized"})}), token="stale")
     error, body = await call(server, "get_account")
     assert error and "No Libby account is linked" in body
