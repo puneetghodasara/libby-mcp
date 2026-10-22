@@ -30,39 +30,64 @@ from .models import (
 
 INSTRUCTIONS = """\
 Search Libby (OverDrive) library catalogs and check ebook/audiobook availability. No login.
-Libraries are identified by a key such as 'spl'; use find_libraries to look one up.
+Libraries are identified by a key such as 'spl'. Tools take one key or several in `libraries`.
 search_titles merges editions of the same book across libraries; libraries in different countries
 often own different editions, so each availability entry names that library's own title_id.
 """
 
+NO_DEFAULTS = """\
+No default libraries are configured. Before searching, ask the user which library or libraries they
+use (a name or city), look them up with find_libraries, confirm the match, then pass the keys in
+`libraries` on every call.
+"""
+
+ASK_FOR_LIBRARY = (
+    "No library selected. Ask the user which library they use (name or city), look it up with "
+    "find_libraries, and pass its key in `libraries`."
+)
+
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 LibraryKeys = Annotated[
-    list[str] | None,
-    Field(description="Library keys, e.g. ['spl', 'burnaby']. Defaults to LIBBY_LIBRARIES."),
+    list[str] | str | None,
+    Field(description="One library key or several, e.g. 'spl' or ['spl', 'burnaby']. Overrides the defaults."),
 ]
 
 
 def default_libraries() -> list[str]:
-    return [key.strip() for key in os.environ.get("LIBBY_LIBRARIES", "").split(",") if key.strip()]
+    """Optional defaults from LIBBY_LIBRARIES, e.g. 'spl' or 'spl,burnaby'."""
+    return parse_libraries(os.environ.get("LIBBY_LIBRARIES"))
 
 
-def create_server(catalog: Catalog, libraries: list[str] | None = None) -> MCPServer:
-    defaults = libraries or []
-    server = MCPServer("libby", instructions=INSTRUCTIONS, version=version("libby-mcp"))
+def parse_libraries(keys: list[str] | str | None) -> list[str]:
+    """Normalise one key, a comma-separated string or a list into unique, ordered keys."""
+    if isinstance(keys, str):
+        keys = keys.split(",")
+    return list(dict.fromkeys(key.strip().lower() for key in keys or [] if key.strip()))
 
-    def resolve(keys: list[str] | None) -> list[str]:
-        keys = list(dict.fromkeys(keys or defaults))
-        if not keys:
-            raise ToolError(
-                "No libraries given. Pass `libraries` or set LIBBY_LIBRARIES; find keys with find_libraries."
-            )
-        return keys
+
+def create_server(catalog: Catalog, libraries: list[str] | str | None = None) -> MCPServer:
+    defaults = parse_libraries(libraries)
+    configured = f"Default libraries: {', '.join(defaults)}. Omit `libraries` to use them.\n"
+    server = MCPServer(
+        "libby", instructions=INSTRUCTIONS + (configured if defaults else NO_DEFAULTS), version=version("libby-mcp")
+    )
+
+    def resolve(keys: list[str] | str | None) -> list[str]:
+        """Explicit keys win; otherwise the configured defaults; otherwise ask the user."""
+        resolved = parse_libraries(keys) or defaults
+        if not resolved:
+            raise ToolError(ASK_FOR_LIBRARY)
+        return resolved
 
     @server.tool(annotations=READ_ONLY)
     async def find_libraries(
         query: Annotated[str, Field(description="Library name, city or postal code.", min_length=2)],
     ) -> list[Library]:
-        """Find libraries that use Libby and return their keys."""
+        """Find libraries that use Libby by name, city or postal code, and return their keys.
+
+        Several libraries can match (branches, consortia, special collections); confirm the right
+        one with the user before using its key.
+        """
         try:
             return await catalog.find_libraries(query)
         except CatalogError as exc:
@@ -79,7 +104,7 @@ def create_server(catalog: Catalog, libraries: list[str] | None = None) -> MCPSe
         sort: Annotated[Sort, Field(description="'popular' and 'newest' rank within each library.")] = "relevance",
         limit: Annotated[int, Field(ge=1, le=50, description="Results per library.")] = 10,
     ) -> SearchResult:
-        """Search one or more library catalogs, with availability at each library.
+        """Search one library or several at once, with availability at each.
 
         Editions of the same book (title, first author and format) are merged into one result,
         ranked by its best position in any library.
@@ -162,7 +187,7 @@ def create_server(catalog: Catalog, libraries: list[str] | None = None) -> MCPSe
     ) -> list[Subject]:
         """Subjects (genres) in a library's collection, largest first. Use the ids with search_titles."""
         try:
-            return await catalog.subjects(resolve([library] if library else None)[0], media_type)
+            return await catalog.subjects(resolve(library)[0], media_type)
         except CatalogError as exc:
             raise ToolError(str(exc)) from exc
 

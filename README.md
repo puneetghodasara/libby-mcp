@@ -26,8 +26,10 @@ own `title_id`.
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/). Set `LIBBY_LIBRARIES` to your default library keys (use
-`find_libraries` to look them up). Every tool also accepts `libraries` per call.
+Requires [uv](https://docs.astral.sh/uv/). No configuration is needed: when no library is set, the
+server tells the agent to ask which library you use and look it up with `find_libraries`. Every tool
+takes one library key or several in `libraries`. To skip the question, set default libraries with
+`LIBBY_LIBRARIES`; a `libraries` argument on a call still overrides them.
 
 **Claude Code** (`.mcp.json` in your project):
 
@@ -37,7 +39,7 @@ Requires [uv](https://docs.astral.sh/uv/). Set `LIBBY_LIBRARIES` to your default
     "libby": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/puneetghodasara/libby-mcp", "libby-mcp"],
-      "env": { "LIBBY_LIBRARIES": "spl,burnaby" }
+      "env": { "LIBBY_LIBRARIES": "spl,burnaby" }  // optional
     }
   }
 }
@@ -47,7 +49,7 @@ Requires [uv](https://docs.astral.sh/uv/). Set `LIBBY_LIBRARIES` to your default
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LIBBY_LIBRARIES` | none | Comma-separated library keys used when a call doesn't pass `libraries`. |
+| `LIBBY_LIBRARIES` | none | Optional default library keys, one (`spl`) or several (`spl,burnaby`). Without it, the agent asks you. |
 | `SSL_CERT_FILE` / `SSL_CERT_DIR` | none | Extra CA certificates (e.g. a company proxy's). Added to the public roots, not replacing them. |
 
 ## Development

@@ -6,6 +6,7 @@ from conftest import item, mock_catalog
 from mcp import Client
 
 from libby_mcp.catalog import Catalog, CatalogError
+from libby_mcp.server import default_libraries
 
 pytestmark = pytest.mark.anyio
 
@@ -116,9 +117,48 @@ async def test_search_fails_when_every_library_fails(make_server):
     assert error and "nope: catalog API returned 404" in body
 
 
-async def test_requires_libraries(make_server):
-    error, body = await call(make_server({}), "search_titles", query="x")
-    assert error and "LIBBY_LIBRARIES" in body
+async def test_without_defaults_asks_the_user_for_a_library(make_server):
+    server = make_server({})
+    assert "ask the user which library" in server.instructions
+
+    error, body = await call(server, "search_titles", query="x")
+    assert error and "Ask the user which library" in body and "find_libraries" in body
+
+
+async def test_defaults_are_announced_in_instructions(make_server):
+    assert "Default libraries: spl, burnaby" in make_server({}, ["spl", "burnaby"]).instructions
+
+
+async def test_accepts_a_single_library_key(make_server):
+    calls: list[httpx.Request] = []
+    routes = {f"{V2}/spl/media": {"items": []}}
+    error, _ = await call(make_server(routes, calls=calls), "search_titles", query="x", libraries="spl")
+
+    assert not error
+    assert [c.url.path for c in calls] == [f"{V2}/spl/media"]
+
+
+async def test_explicit_libraries_override_defaults(make_server):
+    calls: list[httpx.Request] = []
+    routes = {f"{V2}/burnaby/media": {"items": []}}
+    error, _ = await call(
+        make_server(routes, ["spl"], calls), "search_titles", query="x", libraries=["burnaby", "BURNABY "]
+    )
+
+    assert not error
+    assert [c.url.path for c in calls] == [f"{V2}/burnaby/media"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, []), ("", []), ("spl", ["spl"]), (" spl, Burnaby ,spl,", ["spl", "burnaby"])],
+)
+def test_libby_libraries_env_is_optional(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("LIBBY_LIBRARIES", raising=False)
+    else:
+        monkeypatch.setenv("LIBBY_LIBRARIES", value)
+    assert default_libraries() == expected
 
 
 async def test_availability_handles_unowned_and_always_available(make_server):
