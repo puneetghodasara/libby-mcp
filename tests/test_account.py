@@ -207,7 +207,7 @@ async def test_read_only_hides_write_tools(setup):
     server, _, _ = setup(routes(), read_only=True)
     async with Client(server) as client:
         names = {t.name for t in (await client.list_tools()).tools}
-    assert {"connect_account", "get_account"} <= names
+    assert {"connect_account", "get_account", "get_history"} <= names
     assert not names & {"place_hold", "cancel_hold", "borrow", "renew_loan", "return_loan"}
 
 
@@ -228,3 +228,74 @@ async def test_explicit_defaults_win_over_linked_cards(setup):
     server, calls, _ = setup(routes(**{"/v2/libraries/kcls/media": {"items": []}}), token="t", libraries=["kcls"])
     await call(server, "search_titles", query="x")
     assert not any(c.url.path == "/chip/sync" for c in calls)
+
+
+HISTORY = {
+    "totalItems": 2,
+    "items": [
+        {
+            "id": "30",
+            "title": "Homo Deus",
+            "firstCreatorName": "Yuval Noah Harari",
+            "type": {"id": "audiobook"},
+            "historyType": "checkout",
+            "historyAddDate": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": "31",
+            "title": "Dune",
+            "type": {"id": "ebook"},
+            "historyType": "manual",
+            "historyAddDate": "2026-05-01T00:00:00Z",
+        },
+    ],
+}
+
+
+async def test_get_history_merges_cards_newest_first(setup):
+    late = {
+        "items": [{"id": "40", "title": "Late", "historyType": "checkout", "historyAddDate": "2026-10-01T00:00:00Z"}]
+    }
+    server, calls, _ = setup(
+        routes(
+            **{
+                "/v2/libraries/spl/patrons/me/cards/111/history": HISTORY,
+                "/v2/libraries/burnaby/patrons/me/cards/222/history": late,
+            }
+        ),
+        token="t",
+    )
+    error, body = await call(server, "get_history", limit=5)
+
+    assert not error
+    assert [(i["title_id"], i["library"], i["kind"]) for i in body["items"]] == [
+        ("40", "burnaby", "checkout"),
+        ("30", "spl", "checkout"),
+        ("31", "spl", "manual"),
+    ]
+    request = next(c for c in calls if c.url.path.endswith("/111/history"))
+    assert request.headers["Authorization"] == "Bearer t+" and request.url.params["perPage"] == "5"
+
+
+async def test_get_history_reports_a_failing_library(setup):
+    server, _, _ = setup(
+        routes(
+            **{
+                "/v2/libraries/spl/patrons/me/cards/111/history": HISTORY,
+                "/v2/libraries/burnaby/patrons/me/cards/222/history": (403, {"message": "History disabled."}),
+            }
+        ),
+        token="t",
+    )
+    error, body = await call(server, "get_history")
+
+    assert not error and len(body["items"]) == 2
+    assert "History disabled." in body["errors"]["burnaby"]
+
+
+async def test_get_history_for_one_library(setup):
+    server, calls, _ = setup(routes(**{"/v2/libraries/spl/patrons/me/cards/111/history": HISTORY}), token="t")
+    error, _ = await call(server, "get_history", library="spl")
+
+    assert not error
+    assert not any("/222/history" in c.url.path for c in calls)

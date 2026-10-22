@@ -24,6 +24,7 @@ from .models import (
     Availability,
     AvailabilityResult,
     Card,
+    HistoryResult,
     Library,
     MediaType,
     SearchResult,
@@ -236,6 +237,22 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
         """The user's library cards, current loans (with due dates) and holds (with queue position)."""
         try:
             return await account.summary()
+        except AccountError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool(annotations=READ_ONLY)
+    async def get_history(
+        library: Annotated[
+            str | None, Field(description="Library key of one card; all linked cards if omitted.")
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=100, description="Most recent entries per card.")] = 50,
+    ) -> HistoryResult:
+        """The user's reading history: past loans and titles added or rated, newest first.
+
+        Comes from OverDrive's per-card reading history, which a library may not keep.
+        """
+        try:
+            return await account.history(library, limit)
         except AccountError as exc:
             raise ToolError(str(exc)) from exc
 

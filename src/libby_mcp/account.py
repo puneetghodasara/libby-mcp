@@ -6,6 +6,7 @@ after 7 days unless refreshed, so it is refreshed on use and saved to a local fi
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -14,8 +15,8 @@ from typing import Any
 
 import httpx
 
-from .catalog import SHARE_URL, Catalog, CatalogError
-from .models import AccountSummary, Card, Hold, Loan
+from .catalog import SHARE_URL, THUNDER_URL, Catalog, CatalogError
+from .models import AccountSummary, Card, HistoryItem, HistoryResult, Hold, Loan
 
 SENTRY_URL = "https://sentry.libbyapp.com"
 _CODE = re.compile(r"^\d{8}$")
@@ -84,6 +85,43 @@ class Account:
             loans=[_loan(item, library) for item in data.get("loans") or []],
             holds=[_hold(item, library) for item in data.get("holds") or []],
         )
+
+    async def history(self, library: str | None, limit: int) -> HistoryResult:
+        """Past loans and other reading-history entries, from each linked card (or one)."""
+        cards = await self.cards()
+        if not cards:
+            raise NotConnected
+        chosen = [card for card in cards if library is None or card.library == library.strip().lower()]
+        if not chosen:
+            raise AccountError(f"Pass `library` as one of the linked libraries: {', '.join(c.library for c in cards)}.")
+        results = await asyncio.gather(*(self._card_history(card, limit) for card in chosen), return_exceptions=True)
+        items: list[HistoryItem] = []
+        errors: dict[str, str] = {}
+        for card, result in zip(chosen, results, strict=True):
+            if isinstance(result, AccountError):
+                errors[card.library] = str(result)
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                items.extend(result)
+        if len(errors) == len(chosen):
+            raise AccountError("; ".join(f"{key}: {reason}" for key, reason in errors.items()))
+        return HistoryResult(items=sorted(items, key=lambda i: i.added or "", reverse=True), errors=errors)
+
+    async def _card_history(self, card: Card, limit: int) -> list[HistoryItem]:
+        url = f"{THUNDER_URL}/libraries/{card.library}/patrons/me/cards/{card.id}/history"
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {self._token}"}
+        try:
+            response = await self._http.get(url, params={"perPage": limit, "sortBy": "newlyadded"}, headers=headers)
+        except httpx.TransportError as exc:
+            raise AccountError(f"Libby unreachable: {exc}") from exc
+        try:
+            body = response.json() if response.content else {}
+        except ValueError:
+            body = {}
+        if response.is_error:
+            raise AccountError(_error_message(response.status_code, body if isinstance(body, dict) else {}))
+        return [_history(item, card.library) for item in body.get("items") or []]
 
     async def place_hold(self, title_id: str, library: str | None) -> None:
         card = await self._card(library)
@@ -246,7 +284,20 @@ def _hold(item: dict[str, Any], library: dict[str, str]) -> Hold:
     )
 
 
+def _history(item: dict[str, Any], library: str) -> HistoryItem:
+    return HistoryItem(
+        title_id=str(item["id"]),
+        title=item.get("title") or "",
+        author=item.get("firstCreatorName"),
+        media_type=(item.get("type") or {}).get("id"),
+        library=library,
+        kind=item.get("historyType"),
+        added=item.get("historyAddDate"),
+        libby_url=SHARE_URL.format(id=item["id"]),
+    )
+
+
 def _error_message(status: int, body: dict[str, Any]) -> str:
     upstream = body.get("upstream") or {}
-    detail = upstream.get("userExplanation") or upstream.get("errorCode") or body.get("result")
+    detail = upstream.get("userExplanation") or upstream.get("errorCode") or body.get("result") or body.get("message")
     return f"Libby returned {status}" + (f": {detail}" if detail else "")

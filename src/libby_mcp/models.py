@@ -106,3 +106,19 @@ class AccountSummary(BaseModel):
     cards: list[Card]
     loans: list[Loan]
     holds: list[Hold]
+
+
+class HistoryItem(BaseModel):
+    title_id: str
+    title: str
+    author: str | None = None
+    media_type: str | None = None
+    library: str
+    kind: str | None = Field(None, description="How it entered the history: checkout, manual or imported-star-rating.")
+    added: str | None = Field(None, description="When it was added to the history (for checkouts, when borrowed).")
+    libby_url: str
+
+
+class HistoryResult(BaseModel):
+    items: list[HistoryItem] = Field(description="Newest first.")
+    errors: dict[str, str] = Field(default_factory=dict, description="Libraries whose history failed, with the reason.")
