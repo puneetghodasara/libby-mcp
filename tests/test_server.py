@@ -87,10 +87,12 @@ async def test_search_passes_filters(make_server):
         media_type="audiobook",
         available_only=True,
         subject_ids=["36", "80"],
+        category_codes=["POL062000"],
         sort="newest",
         limit=5,
     )
     params = calls[0].url.params
+    assert params.get_list("bisacCode") == ["POL062000"]
     assert params["mediaTypes"] == "audiobook"
     assert params["showOnlyAvailable"] == "true"
     assert params.get_list("subject") == ["36", "80"]
@@ -185,6 +187,7 @@ async def test_get_title_returns_plain_text_details(make_server):
             description="<p><b>Big</b> &amp; bold</p>",
             publisher={"name": "Harper"},
             detailedSeries={"seriesName": "Saga", "readingOrder": "2"},
+            bisac=[{"code": "HIS039000", "description": "History / Civilization"}],
         )
     }
     error, body = await call(make_server(routes), "get_title", title_id="42")
@@ -195,6 +198,7 @@ async def test_get_title_returns_plain_text_details(make_server):
     assert body["series"] == "Saga" and body["series_position"] == "2"
     assert body["isbns"] == ["9780000000001"]
     assert body["published"] == "2020-01-02"
+    assert body["categories"] == [{"code": "HIS039000", "name": "History / Civilization"}]
 
 
 async def test_get_title_rejects_non_numeric_id(make_server):

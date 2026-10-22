@@ -126,6 +126,10 @@ def create_server(
         available_only: Annotated[bool, Field(description="Only titles available now somewhere.")] = False,
         language: Annotated[str | None, Field(description="ISO 639-1 code; null for any.")] = "en",
         subject_ids: Annotated[list[str] | None, Field(description="Subject ids from list_subjects.")] = None,
+        category_codes: Annotated[
+            list[str] | None,
+            Field(description="BISAC codes (from a title's categories), e.g. ['POL062000']; titles must match all."),
+        ] = None,
         sort: Annotated[Sort, Field(description="'popular' and 'newest' rank within each library.")] = "relevance",
         limit: Annotated[int, Field(ge=1, le=50, description="Results per library.")] = 10,
     ) -> SearchResult:
@@ -144,6 +148,7 @@ def create_server(
                     available_only=available_only,
                     language=language,
                     subject_ids=subject_ids,
+                    category_codes=category_codes,
                     sort=sort,
                     limit=limit,
                 )
@@ -246,11 +251,21 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
         limit: Annotated[int, Field(ge=1, le=500, description="Most recent titles to return.")] = 100,
         progress: Annotated[bool, Field(description="Include reading statistics (one lookup per title).")] = True,
     ) -> HistoryResult:
-        """Everything the user has borrowed in Libby, most recently borrowed first.
+        """Everything the user has borrowed in Libby, most recently borrowed first. Raw data; format it as asked.
 
-        Per title: borrow count and dates, current status (on loan, on hold, returned), the user's other
-        Libby tags (such as 'Finished') and, with `progress`, time spent, sessions, reading-position
-        marker, audiobook length, share actually heard and pace. Raw data; format it as the user asks.
+        Per title: borrow count and dates (a minimum), status (on_loan / on_hold / returned), subjects and
+        BISAC categories, the user's other Libby tags (e.g. 'Finished'), ISBNs and, with `progress`:
+
+        - marker_percent: where the reading position is, not how much was read; it moves when skipping.
+        - listened_percent (audiobooks): how much was actually heard (minutes_spent / length_minutes).
+        - marker_gap_percent (audiobooks): marker minus heard. Up to ~5: at most an intro or preface
+          skipped; above ~10: skipped ahead; negative: parts re-listened. Prefer it over pace early on.
+        - pace (audiobooks): length covered by the marker / time spent. ~1: listened straight through
+          (assuming 1x playback); above ~2: skipped ahead.
+        - minutes_spent and sessions: effort; one session with many minutes was a single long sitting.
+        - Ebooks have no length, so only marker_percent and minutes_spent apply.
+        A marker at 90%+ with a small gap usually means finished; under ~10% with few minutes means
+        sampled or abandoned. 'Finished' in tags is the user's own explicit mark.
         """
         try:
             return await account.history(library, limit, progress=progress)

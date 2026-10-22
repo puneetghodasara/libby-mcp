@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .models import Availability, Library, MediaType, Sort, Subject, Title, TitleDetails
+from .models import Availability, Category, Library, MediaType, Sort, Subject, Title, TitleDetails
 
 THUNDER_URL = "https://thunder.api.overdrive.com/v2"
 LOCATE_URL = "https://locate.libbyapp.com/autocomplete"
@@ -71,6 +71,7 @@ class Catalog:
         available_only: bool = False,
         language: str | None = None,
         subject_ids: list[str] | None = None,
+        category_codes: list[str] | None = None,
         sort: Sort = "relevance",
         limit: int = 10,
     ) -> list[dict[str, Any]]:
@@ -85,6 +86,8 @@ class Catalog:
             params["language"] = language
         if subject_ids:
             params["subject"] = subject_ids
+        if category_codes:
+            params["bisacCode"] = category_codes
         data = await self._get(f"{THUNDER_URL}/libraries/{library}/media", params)
         return data.get("items") or []
 
@@ -150,6 +153,7 @@ def to_title(item: dict[str, Any], availability: list[Availability] | None = Non
         series=series.get("seriesName") or item.get("series") or None,
         series_position=series.get("readingOrder") or None,
         subjects=[s["name"] for s in item.get("subjects") or []],
+        categories=[Category(code=b["code"], name=b.get("description") or b["code"]) for b in item.get("bisac") or []],
         published=(item.get("publishDate") or "")[:10] or None,
         duration=next((f["duration"] for f in formats if f.get("duration")), None),
         star_rating=item.get("starRating") or None,

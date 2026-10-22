@@ -276,6 +276,7 @@ def tagging(title_id: str, website: str, created: int, **extra: Any) -> dict:
         "sortTitle": f"Sort {title_id}",
         "sortAuthor": "Author, Sort",
         "titleSubjects": [{"id": "36", "name": "History"}],
+        "bisacCodes": [{"code": "POL062000", "heading": "Political Science / Geopolitics"}],
         **extra,
     }
 
@@ -329,6 +330,7 @@ async def test_get_history_lists_borrowed_titles_newest_first(setup):
     assert items[1]["tags"] == ["Finished"] and items[1]["first_borrowed"].startswith("2026-05-28")
     assert items[2]["title"] == "Sort 32"  # no longer in the catalog: falls back to the sort title
     assert items[1]["status"] == "returned" and items[1]["borrow_count"] == 1
+    assert items[1]["categories"] == [{"code": "POL062000", "name": "Political Science / Geopolitics"}]
     full = next(c for c in calls if c.url.path.startswith("/tag/u1/"))
     assert full.url.raw_path == b"/tag/u1/%F0%9F%A7%BE" and full.headers["Authorization"] == "Bearer t+"
 

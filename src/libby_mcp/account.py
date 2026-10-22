@@ -18,7 +18,7 @@ from urllib.parse import quote
 import httpx
 
 from .catalog import SHARE_URL, Catalog, CatalogError
-from .models import AccountSummary, Card, HistoryItem, HistoryResult, Hold, Loan
+from .models import AccountSummary, Card, Category, HistoryItem, HistoryResult, Hold, Loan
 
 SENTRY_URL = "https://sentry.libbyapp.com"
 VANDAL_URL = "https://vandal.libbyapp.com"  # Libby's tags, including its automatic borrowing history
@@ -400,6 +400,9 @@ def _history(
         isbns=sorted({f["isbn"] for f in formats if f.get("isbn")}),
         library=keys.get(str(tagging.get("websiteId")), "unknown"),
         subjects=[s["name"] for s in tagging.get("titleSubjects") or []],
+        categories=[
+            Category(code=b["code"], name=b.get("heading") or b["code"]) for b in tagging.get("bisacCodes") or []
+        ],
         tags=tags.get(title_id, []),
         status="on_loan" if loan else "on_hold" if hold else "returned",
         due=(loan or {}).get("expireDate") or (loan or {}).get("expires"),

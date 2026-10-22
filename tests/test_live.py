@@ -72,3 +72,9 @@ async def test_account_rejects_invalid_setup_code(tmp_path):
         with pytest.raises(AccountError, match="didn't accept the setup code"):
             await account.connect("00000000")
         assert await account.cards() == []
+
+
+async def test_search_by_category(client):
+    body = await call(client, "search_titles", libraries="spl", category_codes=["POL062000"], limit=5)
+    assert body["titles"]
+    assert all(any(c["code"] == "POL062000" for c in t["categories"]) for t in body["titles"])

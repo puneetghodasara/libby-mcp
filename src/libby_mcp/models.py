@@ -10,6 +10,11 @@ MediaType = Literal["ebook", "audiobook", "magazine", "video"]
 Sort = Literal["relevance", "popular", "newest"]
 
 
+class Category(BaseModel):
+    code: str = Field(description="BISAC subject code, usable in search_titles `category_codes`.")
+    name: str = Field(description="e.g. 'Political Science / Geopolitics'.")
+
+
 class Library(BaseModel):
     key: str = Field(description="Library key used by every other tool, e.g. 'spl'.")
     name: str
@@ -39,7 +44,8 @@ class Title(BaseModel):
     language: str | None = None
     series: str | None = None
     series_position: str | None = None
-    subjects: list[str] = Field(default_factory=list)
+    subjects: list[str] = Field(default_factory=list, description="Libby's broad subjects, e.g. 'History'.")
+    categories: list[Category] = Field(default_factory=list, description="Specific BISAC publishing categories.")
     published: str | None = Field(None, description="Publish date, YYYY-MM-DD.")
     duration: str | None = Field(None, description="Audiobook length, HH:MM:SS.")
     star_rating: float | None = None
@@ -120,7 +126,8 @@ class HistoryItem(BaseModel):
         default_factory=list, description="ISBNs of this edition's formats, for matching elsewhere."
     )
     library: str
-    subjects: list[str] = Field(default_factory=list)
+    subjects: list[str] = Field(default_factory=list, description="Libby's broad subjects, e.g. 'History'.")
+    categories: list[Category] = Field(default_factory=list, description="Specific BISAC publishing categories.")
     tags: list[str] = Field(default_factory=list, description="The user's other Libby tags on it, e.g. 'Finished'.")
     status: Literal["on_loan", "on_hold", "returned"]
     due: str | None = Field(None, description="Loan due date, when on loan.")
