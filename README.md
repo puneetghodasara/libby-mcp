@@ -1,15 +1,18 @@
 # libby-mcp
 
-An [MCP](https://modelcontextprotocol.io) server for **Libby / OverDrive** library catalogs. Search titles,
-browse what's popular or new, and compare ebook and audiobook availability across several libraries.
-It doesn't need a library card or login.
+An [MCP](https://modelcontextprotocol.io) server for **Libby / OverDrive**. Search library catalogs and
+compare ebook and audiobook availability across several libraries without a login, and, once you link
+your Libby account, see and manage your loans and holds.
 
-> Unofficial. It uses the public catalog API behind the Libby app, which OverDrive can change at any
-> time. A nightly integration test watches for that.
+> Unofficial. The catalog tools use the public catalog API behind the Libby app, which OverDrive can
+> change at any time; a nightly integration test watches for that.
+>
+> **The account tools use Libby's private account API. OverDrive's terms prohibit other clients from
+> using it and say they may suspend accounts. Use them at your own risk.**
 
 ## Tools
 
-All tools are read-only.
+### Catalog (no login, read-only)
 
 | Tool | What it does |
 |---|---|
@@ -23,6 +26,26 @@ All tools are read-only.
 `3255516` (HarperCollins) at Seattle and `3461405` (McClelland & Stewart) at Burnaby. `search_titles`
 merges editions by title, first author and format, and each availability entry carries its library's
 own `title_id`.
+
+### Account (your Libby account)
+
+| Tool | What it does |
+|---|---|
+| `connect_account` | Link your account with an 8-digit setup code (Libby menu > **Copy To Another Device**). |
+| `get_account` | Your library cards, loans (due and renewal dates) and holds (queue position, estimated wait). |
+| `place_hold` / `cancel_hold` | Place or cancel a hold. |
+| `borrow` / `renew_loan` / `return_loan` | Borrow an available title or ready hold, renew or return a loan. |
+
+Write tools take the library key of the card to use (optional with one card). Once linked, searches
+default to your cards' libraries. Set `LIBBY_READ_ONLY=true` to hide the write tools.
+
+**Where the login lives.** `connect_account` saves the account token to
+`~/.config/libby-mcp/identity.json` (mode 600) on the machine running the server; it is never returned
+to the agent. Tokens expire after 7 days unless used, and the server refreshes them on use. In temporary
+environments such as cloud sessions, the file disappears with the container, so link again each session.
+
+The account tools are tested against mocked responses and Libby's live error behaviour, not yet against
+a real linked account.
 
 ## Setup
 
