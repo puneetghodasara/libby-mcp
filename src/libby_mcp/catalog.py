@@ -56,11 +56,11 @@ class Catalog:
             for lib in libs.get("items") or []
         ]
 
-    async def library_keys(self, website_ids: list[int]) -> dict[int, str]:
+    async def library_keys(self, website_ids: list[int | str]) -> dict[str, str]:
         """Library keys for OverDrive website ids."""
         params = {"websiteIds": ",".join(map(str, website_ids)), "perPage": len(website_ids)}
         data = await self._get(f"{THUNDER_URL}/libraries", params)
-        return {lib["websiteId"]: lib["preferredKey"] for lib in data.get("items") or []}
+        return {str(lib["websiteId"]): lib["preferredKey"] for lib in data.get("items") or []}
 
     async def search(
         self,

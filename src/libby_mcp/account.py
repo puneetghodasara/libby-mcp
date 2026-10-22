@@ -20,6 +20,7 @@ from .models import AccountSummary, Card, HistoryItem, HistoryResult, Hold, Loan
 
 SENTRY_URL = "https://sentry.libbyapp.com"
 _CODE = re.compile(r"^\d{8}$")
+DEFAULT_LOAN_DAYS = 14  # when a card has no preference
 
 CONNECT_HINT = (
     "Ask the user for a Libby setup code: in the Libby app, open the menu and choose "
@@ -135,11 +136,11 @@ class Account:
 
     async def borrow(self, title_id: str, library: str | None, media_type: str, days: int | None) -> None:
         card = await self._card(library)
-        await self._request("POST", f"/card/{card.id}/loan/{title_id}", json=_loan_period(media_type, days))
+        await self._request("POST", f"/card/{card.id}/loan/{title_id}", json=_loan_period(card, media_type, days))
 
     async def renew(self, title_id: str, library: str | None, media_type: str, days: int | None) -> None:
         card = await self._card(library)
-        await self._request("PUT", f"/card/{card.id}/loan/{title_id}", json=_loan_period(media_type, days))
+        await self._request("PUT", f"/card/{card.id}/loan/{title_id}", json=_loan_period(card, media_type, days))
 
     async def return_loan(self, title_id: str, library: str | None) -> None:
         card = await self._card(library)
@@ -172,7 +173,7 @@ class Account:
     async def _to_cards(self, items: list[dict[str, Any]]) -> list[Card]:
         # Cards usually carry the library key; fall back to the catalog's website id lookup.
         missing = [c["library"]["websiteId"] for c in items if not c.get("advantageKey") and c.get("library")]
-        keys: dict[int, str] = {}
+        keys: dict[str, str] = {}
         if missing:
             try:
                 keys = await self._catalog.library_keys(missing)
@@ -181,13 +182,14 @@ class Account:
         cards = []
         for item in items:
             library = item.get("library") or {}
-            key = item.get("advantageKey") or keys.get(library.get("websiteId"), "unknown")
+            key = item.get("advantageKey") or keys.get(str(library.get("websiteId")), "unknown")
             cards.append(
                 Card(
                     id=str(item["cardId"]),
                     library=key.lower(),
                     name=item.get("cardName"),
                     library_name=library.get("name"),
+                    loan_days=_loan_days(item.get("lendingPeriods") or {}),
                 )
             )
         return cards
@@ -250,8 +252,19 @@ class Account:
         return body
 
 
-def _loan_period(media_type: str, days: int | None) -> dict[str, Any]:
-    return {"period": days or 14, "units": "days", "lucky_day": None, "title_format": media_type}
+def _loan_period(card: Card, media_type: str, days: int | None) -> dict[str, Any]:
+    days = days or card.loan_days.get(media_type) or DEFAULT_LOAN_DAYS
+    return {"period": days, "units": "days", "lucky_day": None, "title_format": media_type}
+
+
+def _loan_days(periods: dict[str, Any]) -> dict[str, int]:
+    """Preferred loan length per format from a card's lendingPeriods ("book" means ebook)."""
+    days = {}
+    for kind, period in periods.items():
+        amount, unit = (period.get("preference") or [None, None])[:2]
+        if isinstance(amount, int) and unit == "days":
+            days["ebook" if kind == "book" else kind] = amount
+    return days
 
 
 def _loan(item: dict[str, Any], library: dict[str, str]) -> Loan:

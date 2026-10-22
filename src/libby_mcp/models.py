@@ -74,6 +74,9 @@ class Card(BaseModel):
     library: str = Field(description="Library key, as used by the catalog tools.")
     name: str | None = None
     library_name: str | None = None
+    loan_days: dict[str, int] = Field(
+        default_factory=dict, description="Preferred loan length in days per format (ebook, audiobook, magazine)."
+    )
 
 
 class Loan(BaseModel):

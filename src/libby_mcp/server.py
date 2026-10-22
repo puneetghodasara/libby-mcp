@@ -273,7 +273,9 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
     async def borrow(
         title_id: TitleId,
         library: CardLibrary = None,
-        days: Annotated[int | None, Field(ge=1, le=21, description="Loan length in days (default 14).")] = None,
+        days: Annotated[
+            int | None, Field(ge=1, le=21, description="Loan length in days; defaults to the card's preference.")
+        ] = None,
     ) -> str:
         """Borrow an available title, or a hold that is ready. Confirm with the user first."""
         return await _run(
@@ -284,7 +286,9 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
     async def renew_loan(
         title_id: TitleId,
         library: CardLibrary = None,
-        days: Annotated[int | None, Field(ge=1, le=21, description="Loan length in days (default 14).")] = None,
+        days: Annotated[
+            int | None, Field(ge=1, le=21, description="Loan length in days; defaults to the card's preference.")
+        ] = None,
     ) -> str:
         """Renew a loan (possible from its renewable_on date). Confirm with the user first."""
         return await _run(

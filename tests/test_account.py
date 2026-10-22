@@ -13,8 +13,17 @@ from libby_mcp.server import create_server
 pytestmark = pytest.mark.anyio
 
 CARDS = [
-    {"cardId": "111", "advantageKey": "spl", "cardName": "Me", "library": {"websiteId": 83, "name": "Seattle"}},
-    {"cardId": "222", "library": {"websiteId": 100117, "name": "Burnaby"}},  # no key: resolved via the catalog
+    {
+        "cardId": "111",
+        "advantageKey": "spl",
+        "cardName": "Me",
+        "library": {"websiteId": "83", "name": "Seattle"},
+        "lendingPeriods": {
+            "book": {"options": [[7, "days"], [21, "days"]], "preference": [21, "days"]},
+            "audiobook": {"options": [[7, "days"], [14, "days"]], "preference": [14, "days"]},
+        },
+    },
+    {"cardId": "222", "library": {"websiteId": "100117", "name": "Burnaby"}},  # no key: resolved via the catalog
 ]
 SYNC = {
     "result": "synchronized",
@@ -57,7 +66,7 @@ def routes(**overrides: Any) -> dict[str, Any]:
         "POST /chip": chip,
         "POST /chip/clone/code": {"result": "cloned"},
         "GET /chip/sync": SYNC,
-        "/v2/libraries": {"items": [{"websiteId": 100117, "preferredKey": "burnaby"}]},
+        "/v2/libraries": {"items": [{"websiteId": 100117, "preferredKey": "burnaby"}]},  # int here, str in sync
         "/v2/media/42": item("42", "Sapiens", type={"id": "audiobook"}),
         **overrides,
     }
@@ -193,6 +202,33 @@ async def test_borrow_sends_format_and_period(setup):
     assert not error
     loan = next(c for c in calls if c.url.path == "/card/111/loan/42")
     assert json.loads(loan.content) == {"period": 7, "units": "days", "lucky_day": None, "title_format": "audiobook"}
+
+
+async def test_borrow_defaults_to_the_cards_preferred_length(setup):
+    server, calls, _ = setup(
+        routes(**{"POST /card/111/loan/42": {}, "/v2/media/42": item("42", "Sapiens", type={"id": "ebook"})}),
+        token="t",
+    )
+    error, _ = await call(server, "borrow", title_id="42", library="spl")
+
+    assert not error
+    loan = next(c for c in calls if c.url.path == "/card/111/loan/42")
+    assert json.loads(loan.content)["period"] == 21
+
+
+async def test_borrow_falls_back_without_a_card_preference(setup):
+    server, calls, _ = setup(routes(**{"POST /card/222/loan/42": {}}), token="t")
+    error, _ = await call(server, "borrow", title_id="42", library="burnaby")
+
+    assert not error
+    loan = next(c for c in calls if c.url.path == "/card/222/loan/42")
+    assert json.loads(loan.content)["period"] == 14
+
+
+async def test_cards_show_preferred_loan_days(setup):
+    server, _, _ = setup(routes(), token="t")
+    _, body = await call(server, "get_account")
+    assert body["cards"][0]["loan_days"] == {"ebook": 21, "audiobook": 14}
 
 
 async def test_libby_errors_are_reported(setup):
