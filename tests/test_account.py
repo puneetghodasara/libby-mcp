@@ -344,3 +344,46 @@ async def test_get_history_without_borrowing_tag(setup):
     server, _, _ = setup(tag_routes(**{"GET /tags": {"tags": []}}), token="t")
     error, body = await call(server, "get_history")
     assert not error and body == {"items": [], "total": 0}
+
+
+def progress_routes(**overrides: Any) -> dict[str, Any]:
+    listened = {
+        "timestamps": {"accessed": 1_791_094_899},
+        "position": {"percentageOfBook": 0.4712},
+        "statistics": {"accesses": 9, "readingTime": 24_255},
+    }
+    unopened = {"timestamps": {"accessed": 0}, "position": None, "statistics": {"accesses": 1, "readingTime": 0}}
+    return tag_routes(
+        **{
+            "GET /card/111/audiobook/data/30": listened,  # spl title, read through the user's spl card
+            "GET /card/222/book/data/31": unopened,  # burnaby ebook: /book/ path, burnaby card
+            "GET /card/111/audiobook/data/32": (404, {"result": "missing_stamp"}),
+            **overrides,
+        }
+    )
+
+
+async def test_get_history_adds_reading_progress(setup):
+    server, calls, _ = setup(progress_routes(), token="t")
+    error, body = await call(server, "get_history")
+
+    assert not error
+    by_id = {i["title_id"]: i for i in body["items"]}
+    listened = by_id["30"]
+    assert (listened["progress"], listened["time_spent_minutes"], listened["sessions"]) == (0.471, 404, 9)
+    assert listened["last_opened"].startswith("2026-10-")
+    assert (by_id["31"]["progress"], by_id["31"]["time_spent_minutes"], by_id["31"]["last_opened"]) == (0.0, 0, None)
+    assert by_id["32"]["progress"] is None  # no reading record
+    assert {c.url.path for c in calls if "/data/" in c.url.path} == {
+        "/card/111/audiobook/data/30",
+        "/card/222/book/data/31",
+        "/card/111/audiobook/data/32",
+    }
+
+
+async def test_get_history_without_progress_skips_lookups(setup):
+    server, calls, _ = setup(progress_routes(), token="t")
+    error, body = await call(server, "get_history", progress=False)
+
+    assert not error and all(i["progress"] is None for i in body["items"])
+    assert not any("/data/" in c.url.path for c in calls)

@@ -120,6 +120,10 @@ class HistoryItem(BaseModel):
     borrowed: str | None = Field(None, description="When Libby first recorded borrowing it (ISO 8601, UTC).")
     subjects: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list, description="The user's other Libby tags on it, e.g. 'Finished'.")
+    progress: float | None = Field(None, description="Share of the book read or listened to, 0 to 1; null if unknown.")
+    time_spent_minutes: int | None = Field(None, description="Total reading or listening time.")
+    sessions: int | None = Field(None, description="How many times the title was opened.")
+    last_opened: str | None = Field(None, description="When the title was last opened (ISO 8601, UTC).")
     libby_url: str
 
 

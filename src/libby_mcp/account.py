@@ -24,6 +24,7 @@ SENTRY_URL = "https://sentry.libbyapp.com"
 VANDAL_URL = "https://vandal.libbyapp.com"  # Libby's tags, including its automatic borrowing history
 _CODE = re.compile(r"^\d{8}$")
 DEFAULT_LOAN_DAYS = 14  # when a card has no preference
+PROGRESS_CONCURRENCY = 4  # parallel reading-progress lookups
 
 CONNECT_HINT = (
     "Ask the user for a Libby setup code: in the Libby app, open the menu and choose "
@@ -90,9 +91,13 @@ class Account:
             holds=[_hold(item, library) for item in data.get("holds") or []],
         )
 
-    async def history(self, library: str | None, limit: int) -> HistoryResult:
-        """Titles borrowed in Libby, newest first, from Libby's automatic borrowing tag."""
-        if not await self.cards():
+    async def history(self, library: str | None, limit: int, *, progress: bool = True) -> HistoryResult:
+        """Titles borrowed in Libby, newest first, from Libby's automatic borrowing tag.
+
+        With `progress`, each title also gets how far the user read or listened.
+        """
+        cards = await self.cards()
+        if not cards:
             raise NotConnected
         tags = await self._tags()
         borrowed = next((t for t in tags if "borrowed" in (t.get("behaviors") or {})), None)
@@ -113,7 +118,28 @@ class Account:
         except CatalogError:
             details = {}
         items = [_history(t, details.get(str(t["titleId"])), keys, other) for t in taggings]
+        if progress:
+            # Progress is kept per library: read it through the user's current card there.
+            card_for = {card.library: card for card in cards}
+            limiter = asyncio.Semaphore(PROGRESS_CONCURRENCY)
+            await asyncio.gather(*(self._add_progress(item, card_for.get(item.library), limiter) for item in items))
         return HistoryResult(items=items, total=len(borrowed.get("taggings") or []))
+
+    async def _add_progress(self, item: HistoryItem, card: Card | None, limiter: asyncio.Semaphore) -> None:
+        kind = {"audiobook": "audiobook", "ebook": "book"}.get(item.media_type or "")
+        if card is None or kind is None:
+            return
+        async with limiter:
+            try:
+                data = await self._request("GET", f"/card/{card.id}/{kind}/data/{item.title_id}")
+            except AccountError:
+                return  # e.g. 404 missing_stamp: no reading record for this title
+        stats = data.get("statistics") or {}
+        opened = (data.get("timestamps") or {}).get("accessed")
+        item.progress = round(((data.get("position") or {}).get("percentageOfBook") or 0.0), 3)
+        item.time_spent_minutes = round((stats.get("readingTime") or 0) / 60)
+        item.sessions = stats.get("accesses")
+        item.last_opened = datetime.fromtimestamp(opened, UTC).isoformat() if opened else None
 
     async def _tags(self) -> list[dict[str, Any]]:
         """All of the user's Libby tags with every tagging (the list endpoint previews only a few)."""
