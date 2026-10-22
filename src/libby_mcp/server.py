@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import ssl
 from importlib.metadata import version
 from typing import Annotated
 
 import anyio
+import certifi
 import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -191,9 +193,28 @@ def _reason(exc: BaseException) -> str:
     raise exc
 
 
+def ssl_context() -> ssl.SSLContext:
+    """Public roots (certifi) plus any extra CAs from SSL_CERT_FILE / SSL_CERT_DIR.
+
+    Extra CAs are added rather than replacing the public roots, so the server keeps working
+    behind proxies whose bundle holds only their own CA or an incomplete set of roots.
+    """
+    context = ssl.create_default_context(cafile=certifi.where())
+    cafile = os.environ.get("SSL_CERT_FILE") or ""
+    capath = os.environ.get("SSL_CERT_DIR") or ""
+    if os.path.isfile(cafile) or os.path.isdir(capath):
+        context.load_verify_locations(
+            cafile=cafile if os.path.isfile(cafile) else None, capath=capath if os.path.isdir(capath) else None
+        )
+    return context
+
+
 def http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        timeout=20, headers={"User-Agent": f"libby-mcp/{version('libby-mcp')}"}, follow_redirects=True
+        timeout=20,
+        headers={"User-Agent": f"libby-mcp/{version('libby-mcp')}"},
+        follow_redirects=True,
+        verify=ssl_context(),
     )
 
 

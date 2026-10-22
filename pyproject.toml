@@ -16,6 +16,7 @@ classifiers = [
 ]
 dependencies = [
     "anyio>=4.5",
+    "certifi>=2024.2",
     "httpx>=0.28",
     "mcp>=2.3,<3",
 ]
@@ -32,6 +33,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "cryptography>=42",
     "pytest>=9.1",
     "ruff>=0.17",
 ]

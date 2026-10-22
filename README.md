@@ -48,6 +48,7 @@ Requires [uv](https://docs.astral.sh/uv/). Set `LIBBY_LIBRARIES` to your default
 | Variable | Default | Purpose |
 |---|---|---|
 | `LIBBY_LIBRARIES` | none | Comma-separated library keys used when a call doesn't pass `libraries`. |
+| `SSL_CERT_FILE` / `SSL_CERT_DIR` | none | Extra CA certificates (e.g. a company proxy's). Added to the public roots, not replacing them. |
 
 ## Development
 
