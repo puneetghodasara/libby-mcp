@@ -33,7 +33,7 @@ own `title_id`.
 |---|---|
 | `connect_account` | Link your account with an 8-digit setup code (Libby menu > **Copy To Another Device**). |
 | `get_account` | Your library cards, loans (due and renewal dates) and holds (queue position, estimated wait). |
-| `get_history` | Everything you have borrowed in Libby, most recent first, as data: borrow count and dates, status (on loan, on hold, returned), time spent, sessions, reading-position marker, audiobook length, share actually heard, pace, and your other Libby tags such as "Finished". |
+| `get_history` | Everything you have borrowed in Libby, most recent first, as data: borrow count and dates, status (on loan, on hold, returned), time spent, sessions, reading-position marker (and ebook chapter), audiobook length, share actually heard, marker gap and pace (to spot skipping), ISBNs, and your other Libby tags such as "Finished". |
 | `place_hold` / `cancel_hold` | Place or cancel a hold. |
 | `borrow` / `renew_loan` / `return_loan` | Borrow an available title or ready hold, renew or return a loan. |
 

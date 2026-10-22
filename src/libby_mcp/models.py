@@ -116,6 +116,9 @@ class HistoryItem(BaseModel):
     title: str
     author: str | None = None
     media_type: str | None = None
+    isbns: list[str] = Field(
+        default_factory=list, description="ISBNs of this edition's formats, for matching elsewhere."
+    )
     library: str
     subjects: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list, description="The user's other Libby tags on it, e.g. 'Finished'.")
@@ -137,9 +140,17 @@ class HistoryItem(BaseModel):
         None, description="Where the reading position is, as % of the book. Can be ahead of what was heard."
     )
     marker_saved: str | None = Field(None, description="When the reading position was last saved.")
+    marker_chapter: int | None = Field(None, description="Ebooks: index of the chapter the reading position is in.")
+    marker_chapter_title: str | None = Field(None, description="Ebooks: that chapter's title, where Libby records one.")
     last_opened: str | None = None
     listened_percent: float | None = Field(
         None, description="minutes_spent as % of length_minutes: how much of the audiobook was actually heard."
+    )
+    marker_gap_percent: float | None = Field(
+        None,
+        description="marker_percent minus listened_percent: the share of the audiobook the marker passed without "
+        "being heard. Up to about 5: at most an intro or preface skipped; above about 10: skipped ahead; "
+        "negative: parts were listened to more than once. More reliable than pace early in a book.",
     )
     pace: float | None = Field(
         None,

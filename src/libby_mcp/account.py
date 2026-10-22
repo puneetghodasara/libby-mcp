@@ -176,9 +176,13 @@ class Account:
         item.sessions = stats.get("accesses")
         item.marker_percent = round(marker * 100, 1)
         item.marker_saved = _iso(position.get("timestamp"))
+        if position and kind == "book":  # audiobook positions always report chapter 0
+            item.marker_chapter = position.get("chapterIndex")
+            item.marker_chapter_title = position.get("chapterTitle") or None
         item.last_opened = _iso((data.get("timestamps") or {}).get("accessed"))
         if item.length_minutes:
             item.listened_percent = round(seconds / 60 / item.length_minutes * 100, 1)
+            item.marker_gap_percent = round(marker * 100 - item.listened_percent, 1)
             if seconds:
                 item.pace = round(marker * item.length_minutes * 60 / seconds, 2)
 
@@ -386,12 +390,14 @@ def _history(
     title_id = str(tagging["titleId"])
     media_type = tagging.get("titleFormat")
     loan, hold = loans.get(title_id), holds.get(title_id)
-    duration = next((f["duration"] for f in (title or {}).get("formats") or [] if f.get("duration")), None)
+    formats = (title or {}).get("formats") or []
+    duration = next((f["duration"] for f in formats if f.get("duration")), None)
     return HistoryItem(
         title_id=title_id,
         title=(title or {}).get("title") or tagging.get("sortTitle") or "",
         author=(title or {}).get("firstCreatorName") or tagging.get("sortAuthor"),
         media_type="ebook" if media_type == "book" else media_type,
+        isbns=sorted({f["isbn"] for f in formats if f.get("isbn")}),
         library=keys.get(str(tagging.get("websiteId")), "unknown"),
         subjects=[s["name"] for s in tagging.get("titleSubjects") or []],
         tags=tags.get(title_id, []),
@@ -403,7 +409,7 @@ def _history(
         borrow_dates=[_iso(t) for t in times],
         first_borrowed=_iso(min(times)),
         last_borrowed=_iso(max(times)),
-        length_minutes=_minutes(duration),
+        length_minutes=_minutes(duration) if media_type == "audiobook" else None,
         libby_url=SHARE_URL.format(id=title_id),
     )
 

@@ -350,19 +350,30 @@ async def test_get_history_without_borrowing_tag(setup):
 def progress_routes(**overrides: Any) -> dict[str, Any]:
     listened = {
         "timestamps": {"accessed": 1_791_094_899},
-        "position": {"percentageOfBook": 0.3837, "timestamp": 1_791_094_873},
+        "position": {"percentageOfBook": 0.3837, "timestamp": 1_791_094_873, "chapterIndex": 6},
         "statistics": {"accesses": 2, "readingTime": 1198},
     }
     unopened = {"timestamps": {"accessed": 0}, "position": None, "statistics": {"accesses": 1, "readingTime": 0}}
+    prologue = {
+        "timestamps": {"accessed": 1_762_141_240},
+        "position": {"percentageOfBook": 0.035, "chapterIndex": 6, "chapterTitle": "Prologue"},
+        "statistics": {"accesses": 2, "readingTime": 62},
+    }
     return tag_routes(
         **{
             # Title 30 is a 12h33 audiobook; the catalog item carries its duration.
             "/v2/media/bulk": [
-                item("30", "Hong Kong", firstCreatorName="Jan Morris", formats=[{"duration": "12:33:20"}]),
+                item(
+                    "30",
+                    "Hong Kong",
+                    firstCreatorName="Jan Morris",
+                    formats=[{"duration": "12:33:20", "isbn": "97801"}],
+                ),
                 item("31", "Dune"),
             ],
             "GET /card/111/audiobook/data/30": listened,  # spl title, read through the user's spl card
             "GET /card/222/book/data/31": unopened,  # burnaby ebook: /book/ path, burnaby card
+            "GET /card/222/book/data/33": prologue,
             "GET /card/111/audiobook/data/32": (404, {"result": "missing_stamp"}),
             **overrides,
         }
@@ -380,10 +391,14 @@ async def test_get_history_adds_reading_statistics(setup):
     assert (hong_kong["sessions"], hong_kong["marker_percent"], hong_kong["length_minutes"]) == (2, 38.4, 753)
     assert hong_kong["listened_percent"] == 2.7
     assert hong_kong["pace"] == 14.47  # marker far ahead of what was heard: skipped ahead
+    assert hong_kong["marker_gap_percent"] == 35.7
+    assert hong_kong["marker_chapter"] is None  # audiobook positions don't carry a real chapter
+    assert hong_kong["isbns"] == ["97801"]
     assert hong_kong["marker_saved"].startswith("2026-10-04") and hong_kong["last_opened"].startswith("2026-10-04")
     dune = by_id["31"]
     assert (dune["minutes_spent"], dune["marker_percent"], dune["last_opened"], dune["pace"]) == (0, 0.0, None, None)
     assert by_id["32"]["marker_percent"] is None  # no reading record
+    assert (dune["marker_chapter"], dune["marker_gap_percent"]) == (None, None)
     assert {c.url.path for c in calls if "/data/" in c.url.path} == {
         "/card/111/audiobook/data/30",
         "/card/222/book/data/31",
@@ -433,3 +448,16 @@ async def test_get_history_counts_borrows_and_status(setup):
     assert (by_id["30"]["status"], by_id["30"]["due"]) == ("on_loan", "2026-11-12")
     assert (by_id["31"]["status"], by_id["31"]["hold_position"], by_id["31"]["hold_wait_days"]) == ("on_hold", 1, 3)
     assert body["items"][0]["title_id"] == "30"  # most recently borrowed first
+
+
+async def test_get_history_ebook_chapter_title(setup):
+    routes = progress_routes(
+        **{"GET /tag/u1/🧾": {"tag": {"taggings": [tagging("33", "100117", 1_790_000_000_000, titleFormat="book")]}}}
+    )
+    server, _, _ = setup(routes, token="t")
+    error, body = await call(server, "get_history")
+
+    assert not error
+    [ebook] = body["items"]
+    assert (ebook["marker_percent"], ebook["marker_chapter"], ebook["marker_chapter_title"]) == (3.5, 6, "Prologue")
+    assert ebook["marker_gap_percent"] is None  # no length for ebooks
