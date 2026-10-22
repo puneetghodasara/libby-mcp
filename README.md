@@ -33,6 +33,7 @@ own `title_id`.
 |---|---|
 | `connect_account` | Link your account with an 8-digit setup code (Libby menu > **Copy To Another Device**). |
 | `get_account` | Your library cards, loans (due and renewal dates) and holds (queue position, estimated wait). |
+| `get_history` | Everything you have borrowed in Libby (its automatic borrowing tag), newest first, with your other Libby tags on each title, such as "Finished". |
 | `place_hold` / `cancel_hold` | Place or cancel a hold. |
 | `borrow` / `renew_loan` / `return_loan` | Borrow an available title or ready hold, renew or return a loan. |
 
@@ -44,8 +45,8 @@ default to your cards' libraries. Set `LIBBY_READ_ONLY=true` to hide the write t
 to the agent. Tokens expire after 7 days unless used, and the server refreshes them on use. In temporary
 environments such as cloud sessions, the file disappears with the container, so link again each session.
 
-The account tools are tested against mocked responses and Libby's live error behaviour, not yet against
-a real linked account.
+The account tools were checked against a real linked account (linking, cards, loans, holds, history);
+write tools are tested against mocked responses only.
 
 ## Setup
 

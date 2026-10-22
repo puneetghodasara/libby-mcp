@@ -117,11 +117,12 @@ class HistoryItem(BaseModel):
     author: str | None = None
     media_type: str | None = None
     library: str
-    kind: str | None = Field(None, description="How it entered the history: checkout, manual or imported-star-rating.")
-    added: str | None = Field(None, description="When it was added to the history (for checkouts, when borrowed).")
+    borrowed: str | None = Field(None, description="When Libby first recorded borrowing it (ISO 8601, UTC).")
+    subjects: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list, description="The user's other Libby tags on it, e.g. 'Finished'.")
     libby_url: str
 
 
 class HistoryResult(BaseModel):
     items: list[HistoryItem] = Field(description="Newest first.")
-    errors: dict[str, str] = Field(default_factory=dict, description="Libraries whose history failed, with the reason.")
+    total: int = Field(description="All titles in the borrowing history, before `library` and `limit`.")

@@ -242,14 +242,12 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
 
     @server.tool(annotations=READ_ONLY)
     async def get_history(
-        library: Annotated[
-            str | None, Field(description="Library key of one card; all linked cards if omitted.")
-        ] = None,
-        limit: Annotated[int, Field(ge=1, le=100, description="Most recent entries per card.")] = 50,
+        library: Annotated[str | None, Field(description="Only titles borrowed from this library key.")] = None,
+        limit: Annotated[int, Field(ge=1, le=500, description="Most recent titles to return.")] = 100,
     ) -> HistoryResult:
-        """The user's reading history: past loans and titles added or rated, newest first.
+        """Titles the user has borrowed in Libby, newest first, from Libby's automatic borrowing history.
 
-        Comes from OverDrive's per-card reading history, which a library may not keep.
+        Each title also lists the user's other Libby tags on it, such as 'Finished'.
         """
         try:
             return await account.history(library, limit)

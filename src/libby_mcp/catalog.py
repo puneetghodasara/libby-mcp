@@ -96,6 +96,14 @@ class Catalog:
         items = (item for item in data.get("items") or [] if item and item.get("isOwned", True))
         return {str(item["id"]): to_availability(library, item) for item in items}
 
+    async def titles(self, title_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Raw catalog items by id, looked up in batches."""
+        batches = [title_ids[i : i + 25] for i in range(0, len(title_ids), 25)]
+        results = await asyncio.gather(
+            *(self._get(f"{THUNDER_URL}/media/bulk", {"titleIds": ",".join(batch)}) for batch in batches)
+        )
+        return {str(item["id"]): item for items in results for item in items or [] if item}
+
     async def title(self, title_id: str) -> TitleDetails:
         return to_details(await self._get(f"{THUNDER_URL}/media/{title_id}"))
 

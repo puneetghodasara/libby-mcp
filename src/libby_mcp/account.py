@@ -10,15 +10,18 @@ import asyncio
 import json
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
-from .catalog import SHARE_URL, THUNDER_URL, Catalog, CatalogError
+from .catalog import SHARE_URL, Catalog, CatalogError
 from .models import AccountSummary, Card, HistoryItem, HistoryResult, Hold, Loan
 
 SENTRY_URL = "https://sentry.libbyapp.com"
+VANDAL_URL = "https://vandal.libbyapp.com"  # Libby's tags, including its automatic borrowing history
 _CODE = re.compile(r"^\d{8}$")
 DEFAULT_LOAN_DAYS = 14  # when a card has no preference
 
@@ -88,41 +91,47 @@ class Account:
         )
 
     async def history(self, library: str | None, limit: int) -> HistoryResult:
-        """Past loans and other reading-history entries, from each linked card (or one)."""
-        cards = await self.cards()
-        if not cards:
+        """Titles borrowed in Libby, newest first, from Libby's automatic borrowing tag."""
+        if not await self.cards():
             raise NotConnected
-        chosen = [card for card in cards if library is None or card.library == library.strip().lower()]
-        if not chosen:
-            raise AccountError(f"Pass `library` as one of the linked libraries: {', '.join(c.library for c in cards)}.")
-        results = await asyncio.gather(*(self._card_history(card, limit) for card in chosen), return_exceptions=True)
-        items: list[HistoryItem] = []
-        errors: dict[str, str] = {}
-        for card, result in zip(chosen, results, strict=True):
-            if isinstance(result, AccountError):
-                errors[card.library] = str(result)
-            elif isinstance(result, BaseException):
-                raise result
-            else:
-                items.extend(result)
-        if len(errors) == len(chosen):
-            raise AccountError("; ".join(f"{key}: {reason}" for key, reason in errors.items()))
-        return HistoryResult(items=sorted(items, key=lambda i: i.added or "", reverse=True), errors=errors)
+        tags = await self._tags()
+        borrowed = next((t for t in tags if "borrowed" in (t.get("behaviors") or {})), None)
+        if borrowed is None:
+            return HistoryResult(items=[], total=0)
+        other: dict[str, list[str]] = {}
+        for tag in tags:
+            if tag is not borrowed:
+                for tagging in tag.get("taggings") or []:
+                    other.setdefault(str(tagging["titleId"]), []).append(tag["name"])
+        taggings = sorted(borrowed.get("taggings") or [], key=lambda t: t.get("createTime") or 0, reverse=True)
+        keys = await self._library_keys({str(t.get("websiteId")) for t in taggings})
+        if library:
+            taggings = [t for t in taggings if keys.get(str(t.get("websiteId"))) == library.strip().lower()]
+        taggings = taggings[:limit]
+        try:
+            details = await self._catalog.titles([str(t["titleId"]) for t in taggings])
+        except CatalogError:
+            details = {}
+        items = [_history(t, details.get(str(t["titleId"])), keys, other) for t in taggings]
+        return HistoryResult(items=items, total=len(borrowed.get("taggings") or []))
 
-    async def _card_history(self, card: Card, limit: int) -> list[HistoryItem]:
-        url = f"{THUNDER_URL}/libraries/{card.library}/patrons/me/cards/{card.id}/history"
-        headers = {"Accept": "application/json", "Authorization": f"Bearer {self._token}"}
+    async def _tags(self) -> list[dict[str, Any]]:
+        """All of the user's Libby tags with every tagging (the list endpoint previews only a few)."""
+        tags = (await self._request("GET", f"{VANDAL_URL}/tags")).get("tags") or []
+
+        async def complete(tag: dict[str, Any]) -> None:
+            if (tag.get("totalTaggings") or 0) > len(tag.get("taggings") or []):
+                path = f"{VANDAL_URL}/tag/{tag['uuid']}/{quote(tag['name'], safe='')}"
+                tag["taggings"] = ((await self._request("GET", path)).get("tag") or {}).get("taggings") or []
+
+        await asyncio.gather(*(complete(tag) for tag in tags))
+        return tags
+
+    async def _library_keys(self, website_ids: set[str]) -> dict[str, str]:
         try:
-            response = await self._http.get(url, params={"perPage": limit, "sortBy": "newlyadded"}, headers=headers)
-        except httpx.TransportError as exc:
-            raise AccountError(f"Libby unreachable: {exc}") from exc
-        try:
-            body = response.json() if response.content else {}
-        except ValueError:
-            body = {}
-        if response.is_error:
-            raise AccountError(_error_message(response.status_code, body if isinstance(body, dict) else {}))
-        return [_history(item, card.library) for item in body.get("items") or []]
+            return await self._catalog.library_keys(sorted(website_ids)) if website_ids else {}
+        except CatalogError:
+            return {}
 
     async def place_hold(self, title_id: str, library: str | None) -> None:
         card = await self._card(library)
@@ -234,7 +243,8 @@ class Account:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
-            response = await self._http.request(method, f"{SENTRY_URL}{path}", headers=headers, **kwargs)
+            url = path if path.startswith("https://") else f"{SENTRY_URL}{path}"
+            response = await self._http.request(method, url, headers=headers, **kwargs)
         except httpx.TransportError as exc:
             raise AccountError(f"Libby unreachable: {exc}") from exc
         try:
@@ -297,16 +307,22 @@ def _hold(item: dict[str, Any], library: dict[str, str]) -> Hold:
     )
 
 
-def _history(item: dict[str, Any], library: str) -> HistoryItem:
+def _history(
+    tagging: dict[str, Any], title: dict[str, Any] | None, keys: dict[str, str], tags: dict[str, list[str]]
+) -> HistoryItem:
+    title_id = str(tagging["titleId"])
+    created = tagging.get("createTime")
+    media_type = tagging.get("titleFormat")
     return HistoryItem(
-        title_id=str(item["id"]),
-        title=item.get("title") or "",
-        author=item.get("firstCreatorName"),
-        media_type=(item.get("type") or {}).get("id"),
-        library=library,
-        kind=item.get("historyType"),
-        added=item.get("historyAddDate"),
-        libby_url=SHARE_URL.format(id=item["id"]),
+        title_id=title_id,
+        title=(title or {}).get("title") or tagging.get("sortTitle") or "",
+        author=(title or {}).get("firstCreatorName") or tagging.get("sortAuthor"),
+        media_type="ebook" if media_type == "book" else media_type,
+        library=keys.get(str(tagging.get("websiteId")), "unknown"),
+        borrowed=datetime.fromtimestamp(created / 1000, UTC).isoformat() if created else None,
+        subjects=[s["name"] for s in tagging.get("titleSubjects") or []],
+        tags=tags.get(title_id, []),
+        libby_url=SHARE_URL.format(id=title_id),
     )
 
 

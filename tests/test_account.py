@@ -266,72 +266,81 @@ async def test_explicit_defaults_win_over_linked_cards(setup):
     assert not any(c.url.path == "/chip/sync" for c in calls)
 
 
-HISTORY = {
-    "totalItems": 2,
-    "items": [
-        {
-            "id": "30",
-            "title": "Homo Deus",
-            "firstCreatorName": "Yuval Noah Harari",
-            "type": {"id": "audiobook"},
-            "historyType": "checkout",
-            "historyAddDate": "2026-09-01T00:00:00Z",
-        },
-        {
-            "id": "31",
-            "title": "Dune",
-            "type": {"id": "ebook"},
-            "historyType": "manual",
-            "historyAddDate": "2026-05-01T00:00:00Z",
-        },
-    ],
-}
-
-
-async def test_get_history_merges_cards_newest_first(setup):
-    late = {
-        "items": [{"id": "40", "title": "Late", "historyType": "checkout", "historyAddDate": "2026-10-01T00:00:00Z"}]
+def tagging(title_id: str, website: str, created: int, **extra: Any) -> dict:
+    return {
+        "titleId": title_id,
+        "websiteId": website,
+        "cardId": "111",
+        "createTime": created,
+        "titleFormat": "audiobook",
+        "sortTitle": f"Sort {title_id}",
+        "sortAuthor": "Author, Sort",
+        "titleSubjects": [{"id": "36", "name": "History"}],
+        **extra,
     }
-    server, calls, _ = setup(
-        routes(
-            **{
-                "/v2/libraries/spl/patrons/me/cards/111/history": HISTORY,
-                "/v2/libraries/burnaby/patrons/me/cards/222/history": late,
-            }
-        ),
-        token="t",
+
+
+BORROWED = [
+    tagging("30", "83", 1_780_000_000_000),
+    tagging("31", "100117", 1_790_000_000_000, titleFormat="book"),
+    tagging("32", "83", 1_770_000_000_000),
+]
+
+
+def tag_routes(**overrides: Any) -> dict[str, Any]:
+    tags = {
+        "tags": [
+            # The list endpoint previews only some taggings; the full tag has them all.
+            {"name": "🧾", "uuid": "u1", "behaviors": {"borrowed": {}}, "totalTaggings": 3, "taggings": BORROWED[:1]},
+            {
+                "name": "Finished",
+                "uuid": "u2",
+                "behaviors": {},
+                "totalTaggings": 1,
+                "taggings": [tagging("30", "83", 1)],
+            },
+        ]
+    }
+    libraries = {"items": [{"websiteId": 83, "preferredKey": "spl"}, {"websiteId": 100117, "preferredKey": "burnaby"}]}
+    return routes(
+        **{
+            "GET /tags": tags,
+            "GET /tag/u1/🧾": {"tag": {"taggings": BORROWED}},
+            "/v2/media/bulk": [item("30", "Homo Deus", firstCreatorName="Yuval Noah Harari"), item("31", "Dune")],
+            "/v2/libraries": libraries,
+            **overrides,
+        }
     )
-    error, body = await call(server, "get_history", limit=5)
-
-    assert not error
-    assert [(i["title_id"], i["library"], i["kind"]) for i in body["items"]] == [
-        ("40", "burnaby", "checkout"),
-        ("30", "spl", "checkout"),
-        ("31", "spl", "manual"),
-    ]
-    request = next(c for c in calls if c.url.path.endswith("/111/history"))
-    assert request.headers["Authorization"] == "Bearer t+" and request.url.params["perPage"] == "5"
 
 
-async def test_get_history_reports_a_failing_library(setup):
-    server, _, _ = setup(
-        routes(
-            **{
-                "/v2/libraries/spl/patrons/me/cards/111/history": HISTORY,
-                "/v2/libraries/burnaby/patrons/me/cards/222/history": (403, {"message": "History disabled."}),
-            }
-        ),
-        token="t",
-    )
+async def test_get_history_lists_borrowed_titles_newest_first(setup):
+    server, calls, _ = setup(tag_routes(), token="t")
     error, body = await call(server, "get_history")
 
-    assert not error and len(body["items"]) == 2
-    assert "History disabled." in body["errors"]["burnaby"]
+    assert not error
+    assert body["total"] == 3
+    items = body["items"]
+    assert [(i["title_id"], i["library"], i["media_type"]) for i in items] == [
+        ("31", "burnaby", "ebook"),
+        ("30", "spl", "audiobook"),
+        ("32", "spl", "audiobook"),
+    ]
+    assert items[1]["title"] == "Homo Deus" and items[1]["author"] == "Yuval Noah Harari"
+    assert items[1]["tags"] == ["Finished"] and items[1]["borrowed"].startswith("2026-05-28")
+    assert items[2]["title"] == "Sort 32"  # no longer in the catalog: falls back to the sort title
+    full = next(c for c in calls if c.url.path.startswith("/tag/u1/"))
+    assert full.url.raw_path == b"/tag/u1/%F0%9F%A7%BE" and full.headers["Authorization"] == "Bearer t+"
 
 
-async def test_get_history_for_one_library(setup):
-    server, calls, _ = setup(routes(**{"/v2/libraries/spl/patrons/me/cards/111/history": HISTORY}), token="t")
-    error, _ = await call(server, "get_history", library="spl")
+async def test_get_history_filters_by_library_and_limit(setup):
+    server, _, _ = setup(tag_routes(), token="t")
+    error, body = await call(server, "get_history", library="spl", limit=1)
 
     assert not error
-    assert not any("/222/history" in c.url.path for c in calls)
+    assert [i["title_id"] for i in body["items"]] == ["30"] and body["total"] == 3
+
+
+async def test_get_history_without_borrowing_tag(setup):
+    server, _, _ = setup(tag_routes(**{"GET /tags": {"tags": []}}), token="t")
+    error, body = await call(server, "get_history")
+    assert not error and body == {"items": [], "total": 0}
