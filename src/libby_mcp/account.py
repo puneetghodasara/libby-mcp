@@ -25,6 +25,7 @@ VANDAL_URL = "https://vandal.libbyapp.com"  # Libby's tags, including its automa
 _CODE = re.compile(r"^\d{8}$")
 DEFAULT_LOAN_DAYS = 14  # when a card has no preference
 PROGRESS_CONCURRENCY = 4  # parallel reading-progress lookups
+SAME_BORROW_SECONDS = 86_400  # a tag date within a day of a known borrow is that borrow
 
 CONNECT_HINT = (
     "Ask the user for a Libby setup code: in the Libby app, open the menu and choose "
@@ -92,13 +93,14 @@ class Account:
         )
 
     async def history(self, library: str | None, limit: int, *, progress: bool = True) -> HistoryResult:
-        """Titles borrowed in Libby, newest first, from Libby's automatic borrowing tag.
+        """Titles borrowed in Libby, newest first, with borrow dates, loan status and reading progress.
 
-        With `progress`, each title also gets how far the user read or listened.
+        Libby's automatic borrowing tag lists every title; the per-card borrow log adds repeat borrows
+        (for current cards only); the account sync gives loan and hold status; and, with `progress`,
+        each title gets its reading statistics and marker position.
         """
-        cards = await self.cards()
-        if not cards:
-            raise NotConnected
+        sync = await self._sync()
+        cards = self._cards or []
         tags = await self._tags()
         borrowed = next((t for t in tags if "borrowed" in (t.get("behaviors") or {})), None)
         if borrowed is None:
@@ -108,22 +110,54 @@ class Account:
             if tag is not borrowed:
                 for tagging in tag.get("taggings") or []:
                     other.setdefault(str(tagging["titleId"]), []).append(tag["name"])
-        taggings = sorted(borrowed.get("taggings") or [], key=lambda t: t.get("createTime") or 0, reverse=True)
-        keys = await self._library_keys({str(t.get("websiteId")) for t in taggings})
+
+        borrows = await self._borrow_log(cards)
+        loans = {str(loan["id"]): loan for loan in sync.get("loans") or []}
+        holds = {str(hold["id"]): hold for hold in sync.get("holds") or []}
+        records = []
+        for tagging in borrowed.get("taggings") or []:
+            title_id = str(tagging["titleId"])
+            times = _borrow_times(tagging, borrows.get(title_id, []), loans.get(title_id))
+            records.append((max(times), tagging, times))
+        records.sort(key=lambda r: r[0], reverse=True)
+
+        keys = await self._library_keys({str(t.get("websiteId")) for _, t, _ in records})
         if library:
-            taggings = [t for t in taggings if keys.get(str(t.get("websiteId"))) == library.strip().lower()]
-        taggings = taggings[:limit]
+            records = [r for r in records if keys.get(str(r[1].get("websiteId"))) == library.strip().lower()]
+        records = records[:limit]
         try:
-            details = await self._catalog.titles([str(t["titleId"]) for t in taggings])
+            details = await self._catalog.titles([str(t["titleId"]) for _, t, _ in records])
         except CatalogError:
             details = {}
-        items = [_history(t, details.get(str(t["titleId"])), keys, other) for t in taggings]
+        items = [
+            _history(t, times, details.get(str(t["titleId"])), keys, other, loans, holds) for _, t, times in records
+        ]
         if progress:
             # Progress is kept per library: read it through the user's current card there.
             card_for = {card.library: card for card in cards}
             limiter = asyncio.Semaphore(PROGRESS_CONCURRENCY)
             await asyncio.gather(*(self._add_progress(item, card_for.get(item.library), limiter) for item in items))
         return HistoryResult(items=items, total=len(borrowed.get("taggings") or []))
+
+    async def _borrow_log(self, cards: list[Card]) -> dict[str, list[int]]:
+        """Borrow times (epoch seconds) per title from each current card's borrow log; empty if unavailable."""
+        times: dict[str, list[int]] = {}
+
+        async def read(card: Card) -> None:
+            page, pages = 1, 1
+            while page <= pages:
+                try:
+                    data = await self._request("GET", f"/chip/migrating/{card.id}/history", params={"page": page})
+                except AccountError:
+                    return
+                pages = data.get("pages") or 1
+                for act in data.get("acts") or []:
+                    if act.get("action") == "borrow" and act.get("createTime"):
+                        times.setdefault(str(act["titleId"]), []).append(act["createTime"] // 1000)
+                page += 1
+
+        await asyncio.gather(*(read(card) for card in cards))
+        return times
 
     async def _add_progress(self, item: HistoryItem, card: Card | None, limiter: asyncio.Semaphore) -> None:
         kind = {"audiobook": "audiobook", "ebook": "book"}.get(item.media_type or "")
@@ -135,11 +169,18 @@ class Account:
             except AccountError:
                 return  # e.g. 404 missing_stamp: no reading record for this title
         stats = data.get("statistics") or {}
-        opened = (data.get("timestamps") or {}).get("accessed")
-        item.progress = round(((data.get("position") or {}).get("percentageOfBook") or 0.0), 3)
-        item.time_spent_minutes = round((stats.get("readingTime") or 0) / 60)
+        position = data.get("position") or {}
+        seconds = stats.get("readingTime") or 0
+        marker = position.get("percentageOfBook") or 0.0
+        item.minutes_spent = seconds // 60  # rounded down, as Libby shows it
         item.sessions = stats.get("accesses")
-        item.last_opened = datetime.fromtimestamp(opened, UTC).isoformat() if opened else None
+        item.marker_percent = round(marker * 100, 1)
+        item.marker_saved = _iso(position.get("timestamp"))
+        item.last_opened = _iso((data.get("timestamps") or {}).get("accessed"))
+        if item.length_minutes:
+            item.listened_percent = round(seconds / 60 / item.length_minutes * 100, 1)
+            if seconds:
+                item.pace = round(marker * item.length_minutes * 60 / seconds, 2)
 
     async def _tags(self) -> list[dict[str, Any]]:
         """All of the user's Libby tags with every tagging (the list endpoint previews only a few)."""
@@ -334,22 +375,64 @@ def _hold(item: dict[str, Any], library: dict[str, str]) -> Hold:
 
 
 def _history(
-    tagging: dict[str, Any], title: dict[str, Any] | None, keys: dict[str, str], tags: dict[str, list[str]]
+    tagging: dict[str, Any],
+    times: list[int],
+    title: dict[str, Any] | None,
+    keys: dict[str, str],
+    tags: dict[str, list[str]],
+    loans: dict[str, dict[str, Any]],
+    holds: dict[str, dict[str, Any]],
 ) -> HistoryItem:
     title_id = str(tagging["titleId"])
-    created = tagging.get("createTime")
     media_type = tagging.get("titleFormat")
+    loan, hold = loans.get(title_id), holds.get(title_id)
+    duration = next((f["duration"] for f in (title or {}).get("formats") or [] if f.get("duration")), None)
     return HistoryItem(
         title_id=title_id,
         title=(title or {}).get("title") or tagging.get("sortTitle") or "",
         author=(title or {}).get("firstCreatorName") or tagging.get("sortAuthor"),
         media_type="ebook" if media_type == "book" else media_type,
         library=keys.get(str(tagging.get("websiteId")), "unknown"),
-        borrowed=datetime.fromtimestamp(created / 1000, UTC).isoformat() if created else None,
         subjects=[s["name"] for s in tagging.get("titleSubjects") or []],
         tags=tags.get(title_id, []),
+        status="on_loan" if loan else "on_hold" if hold else "returned",
+        due=(loan or {}).get("expireDate") or (loan or {}).get("expires"),
+        hold_position=(hold or {}).get("holdListPosition"),
+        hold_wait_days=(hold or {}).get("estimatedWaitDays"),
+        borrow_count=len(times),
+        borrow_dates=[_iso(t) for t in times],
+        first_borrowed=_iso(min(times)),
+        last_borrowed=_iso(max(times)),
+        length_minutes=_minutes(duration),
         libby_url=SHARE_URL.format(id=title_id),
     )
+
+
+def _borrow_times(tagging: dict[str, Any], logged: list[int], loan: dict[str, Any] | None) -> list[int]:
+    """Known borrow times: the borrow log, the current loan, and the tag's date when it matches neither.
+
+    The tag date covers borrows the log can't see (old cards, before history began).
+    """
+    times = set(logged)
+    if loan and loan.get("checkoutDate"):
+        times.add(int(datetime.fromisoformat(loan["checkoutDate"].replace("Z", "+00:00")).timestamp()))
+    tagged = (tagging.get("createTime") or 0) // 1000
+    if tagged and all(abs(tagged - t) > SAME_BORROW_SECONDS for t in times):
+        times.add(tagged)
+    return sorted(times)
+
+
+def _minutes(duration: str | None) -> int | None:
+    """'15:18:10' -> 918."""
+    try:
+        hours, minutes, seconds = (int(part) for part in (duration or "").split(":"))
+    except ValueError:
+        return None
+    return hours * 60 + minutes + seconds // 60
+
+
+def _iso(epoch_seconds: int | None) -> str | None:
+    return datetime.fromtimestamp(epoch_seconds, UTC).isoformat() if epoch_seconds else None
 
 
 def _error_message(status: int, body: dict[str, Any]) -> str:

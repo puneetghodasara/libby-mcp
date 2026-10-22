@@ -244,13 +244,13 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
     async def get_history(
         library: Annotated[str | None, Field(description="Only titles borrowed from this library key.")] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="Most recent titles to return.")] = 100,
-        progress: Annotated[bool, Field(description="Include reading progress (one lookup per title).")] = True,
+        progress: Annotated[bool, Field(description="Include reading statistics (one lookup per title).")] = True,
     ) -> HistoryResult:
-        """Titles the user has borrowed in Libby, newest first, from Libby's automatic borrowing history.
+        """Everything the user has borrowed in Libby, most recently borrowed first.
 
-        Each title lists the user's other Libby tags (such as 'Finished') and, with `progress`, how far
-        they read or listened, total time spent and when they last opened it. A borrowed title with
-        progress near 0 was barely opened; near 1, finished.
+        Per title: borrow count and dates, current status (on loan, on hold, returned), the user's other
+        Libby tags (such as 'Finished') and, with `progress`, time spent, sessions, reading-position
+        marker, audiobook length, share actually heard and pace. Raw data; format it as the user asks.
         """
         try:
             return await account.history(library, limit, progress=progress)

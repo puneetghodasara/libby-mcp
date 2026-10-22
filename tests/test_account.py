@@ -315,7 +315,7 @@ def tag_routes(**overrides: Any) -> dict[str, Any]:
 
 async def test_get_history_lists_borrowed_titles_newest_first(setup):
     server, calls, _ = setup(tag_routes(), token="t")
-    error, body = await call(server, "get_history")
+    error, body = await call(server, "get_history", progress=False)
 
     assert not error
     assert body["total"] == 3
@@ -326,8 +326,9 @@ async def test_get_history_lists_borrowed_titles_newest_first(setup):
         ("32", "spl", "audiobook"),
     ]
     assert items[1]["title"] == "Homo Deus" and items[1]["author"] == "Yuval Noah Harari"
-    assert items[1]["tags"] == ["Finished"] and items[1]["borrowed"].startswith("2026-05-28")
+    assert items[1]["tags"] == ["Finished"] and items[1]["first_borrowed"].startswith("2026-05-28")
     assert items[2]["title"] == "Sort 32"  # no longer in the catalog: falls back to the sort title
+    assert items[1]["status"] == "returned" and items[1]["borrow_count"] == 1
     full = next(c for c in calls if c.url.path.startswith("/tag/u1/"))
     assert full.url.raw_path == b"/tag/u1/%F0%9F%A7%BE" and full.headers["Authorization"] == "Bearer t+"
 
@@ -349,12 +350,17 @@ async def test_get_history_without_borrowing_tag(setup):
 def progress_routes(**overrides: Any) -> dict[str, Any]:
     listened = {
         "timestamps": {"accessed": 1_791_094_899},
-        "position": {"percentageOfBook": 0.4712},
-        "statistics": {"accesses": 9, "readingTime": 24_255},
+        "position": {"percentageOfBook": 0.3837, "timestamp": 1_791_094_873},
+        "statistics": {"accesses": 2, "readingTime": 1198},
     }
     unopened = {"timestamps": {"accessed": 0}, "position": None, "statistics": {"accesses": 1, "readingTime": 0}}
     return tag_routes(
         **{
+            # Title 30 is a 12h33 audiobook; the catalog item carries its duration.
+            "/v2/media/bulk": [
+                item("30", "Hong Kong", firstCreatorName="Jan Morris", formats=[{"duration": "12:33:20"}]),
+                item("31", "Dune"),
+            ],
             "GET /card/111/audiobook/data/30": listened,  # spl title, read through the user's spl card
             "GET /card/222/book/data/31": unopened,  # burnaby ebook: /book/ path, burnaby card
             "GET /card/111/audiobook/data/32": (404, {"result": "missing_stamp"}),
@@ -363,17 +369,21 @@ def progress_routes(**overrides: Any) -> dict[str, Any]:
     )
 
 
-async def test_get_history_adds_reading_progress(setup):
+async def test_get_history_adds_reading_statistics(setup):
     server, calls, _ = setup(progress_routes(), token="t")
     error, body = await call(server, "get_history")
 
     assert not error
     by_id = {i["title_id"]: i for i in body["items"]}
-    listened = by_id["30"]
-    assert (listened["progress"], listened["time_spent_minutes"], listened["sessions"]) == (0.471, 404, 9)
-    assert listened["last_opened"].startswith("2026-10-")
-    assert (by_id["31"]["progress"], by_id["31"]["time_spent_minutes"], by_id["31"]["last_opened"]) == (0.0, 0, None)
-    assert by_id["32"]["progress"] is None  # no reading record
+    hong_kong = by_id["30"]
+    assert hong_kong["minutes_spent"] == 19  # 1198 s, rounded down like Libby
+    assert (hong_kong["sessions"], hong_kong["marker_percent"], hong_kong["length_minutes"]) == (2, 38.4, 753)
+    assert hong_kong["listened_percent"] == 2.7
+    assert hong_kong["pace"] == 14.47  # marker far ahead of what was heard: skipped ahead
+    assert hong_kong["marker_saved"].startswith("2026-10-04") and hong_kong["last_opened"].startswith("2026-10-04")
+    dune = by_id["31"]
+    assert (dune["minutes_spent"], dune["marker_percent"], dune["last_opened"], dune["pace"]) == (0, 0.0, None, None)
+    assert by_id["32"]["marker_percent"] is None  # no reading record
     assert {c.url.path for c in calls if "/data/" in c.url.path} == {
         "/card/111/audiobook/data/30",
         "/card/222/book/data/31",
@@ -385,5 +395,41 @@ async def test_get_history_without_progress_skips_lookups(setup):
     server, calls, _ = setup(progress_routes(), token="t")
     error, body = await call(server, "get_history", progress=False)
 
-    assert not error and all(i["progress"] is None for i in body["items"])
+    assert not error and all(i["marker_percent"] is None for i in body["items"])
     assert not any("/data/" in c.url.path for c in calls)
+
+
+async def test_get_history_counts_borrows_and_status(setup):
+    # Title 30: borrowed twice on the current spl card (logged), first on an old card (tag date only),
+    # and on loan again now. Title 31 is on hold.
+    log = {
+        "page": 1,
+        "pages": 1,
+        "acts": [
+            {"titleId": "30", "action": "borrow", "createTime": 1_785_000_000_000},
+            {"titleId": "30", "action": "borrow", "createTime": 1_788_000_000_000},
+        ],
+    }
+    loan = {**SYNC["loans"][0], "id": "30", "checkoutDate": "2026-10-22T16:28:20+00:00", "expireDate": "2026-11-12"}
+    hold = {**SYNC["holds"][0], "id": "31", "holdListPosition": 1, "estimatedWaitDays": 3}
+    server, _, _ = setup(
+        tag_routes(
+            **{
+                "GET /chip/sync": {**SYNC, "loans": [loan], "holds": [hold]},
+                "GET /chip/migrating/111/history": log,
+                "GET /chip/migrating/222/history": (404, {"result": "unrecognized_route"}),
+            }
+        ),
+        token="t",
+    )
+    error, body = await call(server, "get_history", progress=False)
+
+    assert not error
+    by_id = {i["title_id"]: i for i in body["items"]}
+    assert by_id["30"]["borrow_count"] == 4  # tag date (old card) + two logged + current loan
+    assert by_id["30"]["last_borrowed"].startswith("2026-10-22") and by_id["30"]["first_borrowed"].startswith(
+        "2026-05-28"
+    )
+    assert (by_id["30"]["status"], by_id["30"]["due"]) == ("on_loan", "2026-11-12")
+    assert (by_id["31"]["status"], by_id["31"]["hold_position"], by_id["31"]["hold_wait_days"]) == ("on_hold", 1, 3)
+    assert body["items"][0]["title_id"] == "30"  # most recently borrowed first

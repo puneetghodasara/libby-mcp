@@ -117,16 +117,38 @@ class HistoryItem(BaseModel):
     author: str | None = None
     media_type: str | None = None
     library: str
-    borrowed: str | None = Field(None, description="When Libby first recorded borrowing it (ISO 8601, UTC).")
     subjects: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list, description="The user's other Libby tags on it, e.g. 'Finished'.")
-    progress: float | None = Field(None, description="Share of the book read or listened to, 0 to 1; null if unknown.")
-    time_spent_minutes: int | None = Field(None, description="Total reading or listening time.")
+    status: Literal["on_loan", "on_hold", "returned"]
+    due: str | None = Field(None, description="Loan due date, when on loan.")
+    hold_position: int | None = Field(None, description="Place in the hold queue, when on hold.")
+    hold_wait_days: int | None = Field(None, description="Estimated wait, when on hold.")
+    borrow_count: int = Field(
+        description="Known borrows. A minimum: repeat borrows are only logged on current cards since "
+        "their reading history began."
+    )
+    borrow_dates: list[str] = Field(description="Known borrow times (ISO 8601, UTC), oldest first.")
+    first_borrowed: str | None = None
+    last_borrowed: str | None = None
+    length_minutes: int | None = Field(None, description="Full length of the audiobook.")
+    minutes_spent: int | None = Field(None, description="Time spent reading or listening, rounded down.")
     sessions: int | None = Field(None, description="How many times the title was opened.")
-    last_opened: str | None = Field(None, description="When the title was last opened (ISO 8601, UTC).")
+    marker_percent: float | None = Field(
+        None, description="Where the reading position is, as % of the book. Can be ahead of what was heard."
+    )
+    marker_saved: str | None = Field(None, description="When the reading position was last saved.")
+    last_opened: str | None = None
+    listened_percent: float | None = Field(
+        None, description="minutes_spent as % of length_minutes: how much of the audiobook was actually heard."
+    )
+    pace: float | None = Field(
+        None,
+        description="Length covered by the marker divided by time spent. About 1: listened straight through "
+        "at 1x; about 1.3-2: faster playback or some skipping; above 2: skipped ahead.",
+    )
     libby_url: str
 
 
 class HistoryResult(BaseModel):
-    items: list[HistoryItem] = Field(description="Newest first.")
+    items: list[HistoryItem] = Field(description="Most recently borrowed first.")
     total: int = Field(description="All titles in the borrowing history, before `library` and `limit`.")
