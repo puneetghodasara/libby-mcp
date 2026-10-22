@@ -67,3 +67,42 @@ class Subject(BaseModel):
     id: str
     name: str
     count: int
+
+
+class Card(BaseModel):
+    id: str = Field(description="Libby card id.")
+    library: str = Field(description="Library key, as used by the catalog tools.")
+    name: str | None = None
+    library_name: str | None = None
+
+
+class Loan(BaseModel):
+    title_id: str
+    title: str
+    author: str | None = None
+    media_type: str | None = None
+    library: str
+    checkout_date: str | None = None
+    expires: str | None = None
+    renewable_on: str | None = Field(None, description="Earliest renewal date.")
+    libby_url: str
+
+
+class Hold(BaseModel):
+    title_id: str
+    title: str
+    author: str | None = None
+    media_type: str | None = None
+    library: str
+    placed: str | None = None
+    ready: bool = Field(description="Available to borrow now.")
+    position: int | None = Field(None, description="Place in the hold queue.")
+    estimated_wait_days: int | None = None
+    auto_borrow: bool = False
+    libby_url: str
+
+
+class AccountSummary(BaseModel):
+    cards: list[Card]
+    loans: list[Loan]
+    holds: list[Hold]

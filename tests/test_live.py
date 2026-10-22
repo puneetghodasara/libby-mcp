@@ -7,6 +7,7 @@ OverDrive changed something.
 import pytest
 from mcp import Client
 
+from libby_mcp.account import Account, AccountError
 from libby_mcp.catalog import Catalog
 from libby_mcp.server import create_server, http_client
 
@@ -62,3 +63,12 @@ async def test_get_title(client):
 async def test_list_subjects(client):
     body = await call(client, "list_subjects", library="spl")
     assert any(s["name"] == "History" for s in body["result"])
+
+
+async def test_account_rejects_invalid_setup_code(tmp_path):
+    async with http_client() as http:
+        catalog = Catalog(http)
+        account = Account(http, catalog, tmp_path / "identity.json")
+        with pytest.raises(AccountError, match="didn't accept the setup code"):
+            await account.connect("00000000")
+        assert await account.cards() == []

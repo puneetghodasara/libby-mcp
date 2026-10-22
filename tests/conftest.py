@@ -34,13 +34,14 @@ def item(title_id: str, title: str, **overrides: Any) -> dict[str, Any]:
     }
 
 
-def mock_catalog(routes: Routes, calls: list[httpx.Request] | None = None) -> Catalog:
-    """Catalog backed by `routes`: URL path -> JSON body, (status, body), or a callable."""
+def mock_http(routes: Routes, calls: list[httpx.Request] | None = None) -> httpx.AsyncClient:
+    """HTTP client backed by `routes`: "METHOD /path" or "/path" -> JSON body, (status, body), or a callable."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if calls is not None:
             calls.append(request)
-        route = routes.get(request.url.path)
+        path = request.url.path
+        route = routes.get(f"{request.method} {path}", routes.get(path))
         if route is None:
             return httpx.Response(404, json={"message": "Library not found."})
         if callable(route):
@@ -48,7 +49,11 @@ def mock_catalog(routes: Routes, calls: list[httpx.Request] | None = None) -> Ca
         status, body = route if isinstance(route, tuple) else (200, route)
         return httpx.Response(status, json=body)
 
-    return Catalog(httpx.AsyncClient(transport=httpx.MockTransport(handler)), backoff=0)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def mock_catalog(routes: Routes, calls: list[httpx.Request] | None = None) -> Catalog:
+    return Catalog(mock_http(routes, calls), backoff=0)
 
 
 @pytest.fixture
