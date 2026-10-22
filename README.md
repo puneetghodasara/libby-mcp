@@ -39,7 +39,7 @@ takes one library key or several in `libraries`. To skip the question, set defau
     "libby": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/puneetghodasara/libby-mcp", "libby-mcp"],
-      "env": { "LIBBY_LIBRARIES": "spl,burnaby" }  // optional
+      "env": { "LIBBY_LIBRARIES": "spl,burnaby" }
     }
   }
 }
