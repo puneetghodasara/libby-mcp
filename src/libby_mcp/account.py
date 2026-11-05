@@ -26,6 +26,7 @@ _CODE = re.compile(r"^\d{8}$")
 DEFAULT_LOAN_DAYS = 14  # when a card has no preference
 PROGRESS_CONCURRENCY = 4  # parallel reading-progress lookups
 SAME_BORROW_SECONDS = 86_400  # a tag date within a day of a known borrow is that borrow
+LOAN_WINDOW_SECONDS = 21 * 86_400  # longest Libby loan: a title tagged during a loan belongs to that borrow
 
 CONNECT_HINT = (
     "Ask the user for a Libby setup code: in the Libby app, open the menu and choose "
@@ -95,9 +96,10 @@ class Account:
     async def history(self, library: str | None, limit: int, *, progress: bool = True) -> HistoryResult:
         """Titles borrowed in Libby, newest first, with borrow dates, loan status and reading progress.
 
-        Libby's automatic borrowing tag lists every title; the per-card borrow log adds repeat borrows
-        (for current cards only); the account sync gives loan and hold status; and, with `progress`,
-        each title gets its reading statistics and marker position.
+        Libby's automatic borrowing tag lists every title borrowed in the app; current loans missing
+        from it (borrowed elsewhere) are added from the account sync. The per-card borrow log adds
+        repeat borrows (for current cards only); the sync gives loan and hold status; and, with
+        `progress`, each title gets its reading statistics and marker position.
         """
         sync = await self._sync()
         cards = self._cards or []
@@ -114,8 +116,11 @@ class Account:
         borrows = await self._borrow_log(cards)
         loans = {str(loan["id"]): loan for loan in sync.get("loans") or []}
         holds = {str(hold["id"]): hold for hold in sync.get("holds") or []}
+        taggings = list(borrowed.get("taggings") or [])
+        tagged = {str(t["titleId"]) for t in taggings}
+        taggings += [_tagging(loan) for title_id, loan in loans.items() if title_id not in tagged]
         records = []
-        for tagging in borrowed.get("taggings") or []:
+        for tagging in taggings:
             title_id = str(tagging["titleId"])
             times = _borrow_times(tagging, borrows.get(title_id, []), loans.get(title_id))
             records.append((max(times), tagging, times))
@@ -137,7 +142,7 @@ class Account:
             card_for = {card.library: card for card in cards}
             limiter = asyncio.Semaphore(PROGRESS_CONCURRENCY)
             await asyncio.gather(*(self._add_progress(item, card_for.get(item.library), limiter) for item in items))
-        return HistoryResult(items=items, total=len(borrowed.get("taggings") or []))
+        return HistoryResult(items=items, total=len(taggings))
 
     async def _borrow_log(self, cards: list[Card]) -> dict[str, list[int]]:
         """Borrow times (epoch seconds) per title from each current card's borrow log; empty if unavailable."""
@@ -214,9 +219,32 @@ class Account:
         card = await self._card(library)
         await self._request("DELETE", f"/card/{card.id}/hold/{title_id}")
 
-    async def borrow(self, title_id: str, library: str | None, media_type: str, days: int | None) -> None:
+    async def borrow(self, title_id: str, library: str | None, media_type: str, days: int | None) -> str | None:
+        """Borrow, then add the title to Libby's automatic borrowing tag, as the Libby app does.
+
+        Returns None, or why the title couldn't be added to the borrowing history (the loan stands).
+        """
         card = await self._card(library)
         await self._request("POST", f"/card/{card.id}/loan/{title_id}", json=_loan_period(card, media_type, days))
+        try:
+            await self._tag_borrowed(title_id)
+        except (AccountError, CatalogError) as exc:
+            return f"It couldn't be added to Libby's borrowing history: {exc}"
+        return None
+
+    async def _tag_borrowed(self, title_id: str) -> None:
+        """Add a current loan to the borrowing tag, dated at checkout; a title already there is left as is."""
+        borrowed = next((t for t in await self._tags() if "borrowed" in (t.get("behaviors") or {})), None)
+        if borrowed is None:
+            raise AccountError("the account has no borrowing tag")
+        if any(str(t["titleId"]) == title_id for t in borrowed.get("taggings") or []):
+            return
+        loan = next((x for x in (await self._sync()).get("loans") or [] if str(x["id"]) == title_id), None)
+        if loan is None:
+            raise AccountError("the new loan isn't on the account yet")
+        bisac = ((await self._catalog.titles([title_id])).get(title_id) or {}).get("bisac") or []
+        path = f"{VANDAL_URL}/tag/{borrowed['uuid']}/{quote(borrowed['name'], safe='')}/tagging/{title_id}"
+        await self._request("POST", path, json={"tagging": _tagging(loan, bisac)})
 
     async def renew(self, title_id: str, library: str | None, media_type: str, days: int | None) -> None:
         card = await self._card(library)
@@ -378,6 +406,27 @@ def _hold(item: dict[str, Any], library: dict[str, str]) -> Hold:
     )
 
 
+def _tagging(loan: dict[str, Any], bisac: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """A borrowing-tag entry for a loan, shaped like the ones the Libby app writes, dated at checkout."""
+    media_type = (loan.get("type") or {}).get("id")
+    checkout = loan.get("checkoutDate")
+    created = _epoch(checkout) if checkout else int(datetime.now(UTC).timestamp())
+    audience = ((loan.get("ratings") or {}).get("maturityLevel") or {}).get("id") or "generalcontent"
+    return {
+        "titleId": str(loan["id"]),
+        "websiteId": str(loan.get("websiteId") or ""),
+        "cardId": str(loan.get("cardId") or ""),
+        "createTime": created * 1000,
+        "titleFormat": "book" if media_type == "ebook" else media_type,
+        "titleSubjects": [{"id": str(s["id"]), "name": s["name"]} for s in loan.get("subjects") or []],
+        "sortTitle": loan.get("sortTitle") or loan.get("title") or "",
+        "sortAuthor": loan.get("firstCreatorSortName") or loan.get("firstCreatorName") or "",
+        "audiences": [audience],
+        "bisacCodes": [{"code": b["code"], "heading": b.get("description") or b["code"]} for b in bisac or []],
+        "properties": {},
+    }
+
+
 def _history(
     tagging: dict[str, Any],
     times: list[int],
@@ -402,7 +451,8 @@ def _history(
         subjects=[s["name"] for s in tagging.get("titleSubjects") or []],
         categories=[
             Category(code=b["code"], name=b.get("heading") or b["code"]) for b in tagging.get("bisacCodes") or []
-        ],
+        ]
+        or [Category(code=b["code"], name=b.get("description") or b["code"]) for b in (title or {}).get("bisac") or []],
         tags=tags.get(title_id, []),
         status="on_loan" if loan else "on_hold" if hold else "returned",
         due=(loan or {}).get("expireDate") or (loan or {}).get("expires"),
@@ -420,13 +470,14 @@ def _history(
 def _borrow_times(tagging: dict[str, Any], logged: list[int], loan: dict[str, Any] | None) -> list[int]:
     """Known borrow times: the borrow log, the current loan, and the tag's date when it matches neither.
 
-    The tag date covers borrows the log can't see (old cards, before history began).
+    The tag date covers borrows the log can't see (old cards, before history began). A tag added
+    during a known loan (by hand, or late) is that loan, not another borrow.
     """
     times = set(logged)
     if loan and loan.get("checkoutDate"):
-        times.add(int(datetime.fromisoformat(loan["checkoutDate"].replace("Z", "+00:00")).timestamp()))
+        times.add(_epoch(loan["checkoutDate"]))
     tagged = (tagging.get("createTime") or 0) // 1000
-    if tagged and all(abs(tagged - t) > SAME_BORROW_SECONDS for t in times):
+    if tagged and not any(t - SAME_BORROW_SECONDS <= tagged <= t + LOAN_WINDOW_SECONDS for t in times):
         times.add(tagged)
     return sorted(times)
 
@@ -438,6 +489,10 @@ def _minutes(duration: str | None) -> int | None:
     except ValueError:
         return None
     return hours * 60 + minutes + seconds // 60
+
+
+def _epoch(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
 
 
 def _iso(epoch_seconds: int | None) -> str | None:

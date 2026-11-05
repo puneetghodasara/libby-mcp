@@ -293,10 +293,15 @@ def _add_account_tools(server: MCPServer, catalog: Catalog, account: Account, *,
             int | None, Field(ge=1, le=21, description="Loan length in days; defaults to the card's preference.")
         ] = None,
     ) -> str:
-        """Borrow an available title, or a hold that is ready. Confirm with the user first."""
-        return await _run(
-            account.borrow(title_id, library, await _media_type(catalog, title_id), days), f"Borrowed {title_id}."
-        )
+        """Borrow an available title, or a hold that is ready, and add it to Libby's borrowing history.
+
+        Confirm with the user first.
+        """
+        try:
+            note = await account.borrow(title_id, library, await _media_type(catalog, title_id), days)
+        except AccountError as exc:
+            raise ToolError(str(exc)) from exc
+        return f"Borrowed {title_id}." + (f" {note}" if note else "")
 
     @server.tool(annotations=WRITE)
     async def renew_loan(
