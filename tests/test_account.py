@@ -307,6 +307,7 @@ def tag_routes(**overrides: Any) -> dict[str, Any]:
         **{
             "GET /tags": tags,
             "GET /tag/u1/🧾": {"tag": {"taggings": BORROWED}},
+            "GET /chip/sync": {**SYNC, "loans": []},  # loans not in the tag show up in history too
             "/v2/media/bulk": [item("30", "Homo Deus", firstCreatorName="Yuval Noah Harari"), item("31", "Dune")],
             "/v2/libraries": libraries,
             **overrides,
@@ -463,3 +464,83 @@ async def test_get_history_ebook_chapter_title(setup):
     [ebook] = body["items"]
     assert (ebook["marker_percent"], ebook["marker_chapter"], ebook["marker_chapter_title"]) == (3.5, 6, "Prologue")
     assert ebook["marker_gap_percent"] is None  # no length for ebooks
+
+
+def borrow_routes(**overrides: Any) -> dict[str, Any]:
+    loan = {
+        **SYNC["loans"][0],
+        "id": "42",
+        "websiteId": 83,
+        "sortTitle": "Sapiens",
+        "firstCreatorSortName": "Harari, Yuval Noah",
+        "subjects": [{"id": 36, "name": "History"}],
+        "checkoutDate": "2026-11-05T17:47:05Z",
+    }
+    return tag_routes(
+        **{
+            "POST /card/111/loan/42": {},
+            "GET /chip/sync": {**SYNC, "loans": [loan]},
+            "/v2/media/bulk": [item("42", "Sapiens", bisac=[{"code": "HIS037000", "description": "History / World"}])],
+            "POST /tag/u1/🧾/tagging/42": {"result": "created"},
+            **overrides,
+        }
+    )
+
+
+async def test_borrow_adds_the_title_to_the_borrowing_tag(setup):
+    server, calls, _ = setup(borrow_routes(), token="t")
+    error, body = await call(server, "borrow", title_id="42", library="spl")
+
+    assert not error and body == {"result": "Borrowed 42."}
+    post = next(c for c in calls if c.method == "POST" and "/tagging/" in c.url.path)
+    assert post.url.raw_path == b"/tag/u1/%F0%9F%A7%BE/tagging/42"
+    tagging = json.loads(post.content)["tagging"]
+    assert tagging["createTime"] == 1_793_900_825_000  # dated at checkout, not now
+    assert (tagging["websiteId"], tagging["cardId"], tagging["titleFormat"]) == ("83", "111", "audiobook")
+    assert tagging["sortAuthor"] == "Harari, Yuval Noah"
+    assert tagging["titleSubjects"] == [{"id": "36", "name": "History"}]
+    assert tagging["bisacCodes"] == [{"code": "HIS037000", "heading": "History / World"}]
+
+
+async def test_borrow_leaves_an_already_tagged_title(setup):
+    full = {"tag": {"taggings": [*BORROWED, tagging("42", "83", 1_700_000_000_000)]}}
+    server, calls, _ = setup(borrow_routes(**{"GET /tag/u1/🧾": full}), token="t")
+    error, _ = await call(server, "borrow", title_id="42", library="spl")
+
+    assert not error
+    assert not any("/tagging/" in c.url.path for c in calls)
+
+
+async def test_borrow_stands_when_tagging_fails(setup):
+    server, _, _ = setup(borrow_routes(**{"POST /tag/u1/🧾/tagging/42": (500, {"result": "boom"})}), token="t")
+    error, body = await call(server, "borrow", title_id="42", library="spl")
+
+    assert not error
+    assert body["result"].startswith("Borrowed 42. It couldn't be added to Libby's borrowing history")
+
+
+async def test_get_history_includes_untagged_loans(setup):
+    # Title 42 was borrowed outside the Libby app, so it isn't in the borrowing tag.
+    server, _, _ = setup(
+        borrow_routes(**{"/v2/media/bulk": [item("42", "Sapiens", bisac=[{"code": "X1", "description": "Xs"}])]}),
+        token="t",
+    )
+    error, body = await call(server, "get_history", progress=False)
+
+    assert not error and body["total"] == 4
+    first = body["items"][0]
+    assert (first["title_id"], first["library"], first["status"]) == ("42", "spl", "on_loan")
+    assert first["borrow_dates"] == ["2026-11-05T17:47:05+00:00"]
+    assert first["categories"] == [{"code": "X1", "name": "Xs"}]  # from the catalog, as the loan has none
+
+
+async def test_get_history_tag_added_during_a_loan_is_not_another_borrow(setup):
+    # Title 30 borrowed on 22 Oct and tagged by hand on 5 Nov, while still on loan.
+    loan = {**SYNC["loans"][0], "id": "30", "checkoutDate": "2026-10-22T23:09:56Z"}
+    full = {"tag": {"taggings": [tagging("30", "83", 1_793_900_065_000)]}}
+    server, _, _ = setup(tag_routes(**{"GET /chip/sync": {**SYNC, "loans": [loan]}, "GET /tag/u1/🧾": full}), token="t")
+    error, body = await call(server, "get_history", progress=False)
+
+    assert not error
+    item30 = next(i for i in body["items"] if i["title_id"] == "30")
+    assert item30["borrow_count"] == 1 and item30["borrow_dates"] == ["2026-10-22T23:09:56+00:00"]

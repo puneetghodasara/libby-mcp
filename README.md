@@ -35,7 +35,7 @@ own `title_id`.
 | `get_account` | Your library cards, loans (due and renewal dates) and holds (queue position, estimated wait). |
 | `get_history` | Everything you have borrowed in Libby, most recent first, as data: borrow count and dates, status (on loan, on hold, returned), time spent, sessions, reading-position marker (and ebook chapter), audiobook length, share actually heard, marker gap and pace (to spot skipping), BISAC categories, ISBNs, and your other Libby tags such as "Finished". |
 | `place_hold` / `cancel_hold` | Place or cancel a hold. |
-| `borrow` / `renew_loan` / `return_loan` | Borrow an available title or ready hold, renew or return a loan. |
+| `borrow` / `renew_loan` / `return_loan` | Borrow an available title or ready hold (and add it to Libby's borrowing history, as the app does), renew or return a loan. |
 
 Write tools take the library key of the card to use (optional with one card). Once linked, searches
 default to your cards' libraries. Set `LIBBY_READ_ONLY=true` to hide the write tools.
